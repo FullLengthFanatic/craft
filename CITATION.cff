@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use CRAFT, please cite it as below."
+title: "CRAFT: Coding Region Annotation From Templates"
+abstract: "Python toolkit for long-read isoform functional-consequence annotation with truncation-aware ORF propagation."
+authors:
+  - family-names: Picelli
+    given-names: Simone
+    email: simone.picelli@iob.ch
+    affiliation: "Institute of Molecular and Clinical Ophthalmology Basel (IOB)"
+version: 0.1.0
+date-released: 2026-05-13
+license: MIT
+repository-code: "https://github.com/FullLengthFanatic/craft"
+keywords:
+  - long-read RNA-seq
+  - single-cell
+  - isoform annotation
+  - ORF prediction
+  - NMD
+  - functional annotation

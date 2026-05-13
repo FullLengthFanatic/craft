@@ -1,0 +1,21 @@
+{
+    "title": "CRAFT: Coding Region Annotation From Templates",
+    "description": "Python toolkit for long-read isoform functional-consequence annotation with truncation-aware ORF propagation.",
+    "upload_type": "software",
+    "creators": [
+        {
+            "name": "Picelli, Simone",
+            "affiliation": "Institute of Molecular and Clinical Ophthalmology Basel (IOB)"
+        }
+    ],
+    "license": "MIT",
+    "keywords": [
+        "long-read RNA-seq",
+        "single-cell",
+        "isoform annotation",
+        "ORF prediction",
+        "NMD",
+        "functional annotation"
+    ],
+    "access_right": "open"
+}

@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.tox/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bioinformatics data
+*.bam
+*.bai
+*.sam
+*.cram
+*.crai
+*.fa
+*.fa.gz
+*.fasta
+*.fasta.gz
+*.fai
+*.gtf
+*.gtf.gz
+*.gff
+*.gff3
+*.bed
+*.bed.gz
+*.vcf
+*.vcf.gz
+*.tbi
+*.h5
+*.h5ad
+*.mtx
+*.mtx.gz
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local run outputs
+out/
+output/
+results/
