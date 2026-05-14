@@ -15,13 +15,30 @@ from craft.core.nmd import predict as nmd_predict
 from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
+from craft.core.pfam import scan as pfam_scan
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.export.anndata import to_anndata, write_h5ad
 from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
 from craft.report.html import render as render_report
 
-_LIST_COLUMNS = ("propagated_cds_intervals", "denovo_cds_intervals")
+_LIST_COLUMNS = (
+    "propagated_cds_intervals",
+    "denovo_cds_intervals",
+    "iso_pfam_domains",
+    "parent_pfam_domains",
+    "pfam_preserved",
+    "pfam_lost",
+    "pfam_gained",
+)
+
+_PFAM_COLUMNS = (
+    "iso_pfam_domains",
+    "parent_pfam_domains",
+    "pfam_preserved",
+    "pfam_lost",
+    "pfam_gained",
+)
 
 _OUTPUT_COLUMNS = [
     "transcript_id",
@@ -54,6 +71,11 @@ _OUTPUT_COLUMNS = [
     "utr3_length_delta_pct",
     "polya_signal_motif",
     "polya_signal_distance_nt",
+    "iso_pfam_domains",
+    "parent_pfam_domains",
+    "pfam_preserved",
+    "pfam_lost",
+    "pfam_gained",
 ]
 
 _DENOVO_TRIGGER_OUTCOMES = frozenset(
@@ -110,6 +132,7 @@ def run_annotate(
     output_dir: Path,
     genome_path: Path | None = None,
     counts_path: Path | None = None,
+    pfam_hmm_path: Path | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -188,6 +211,15 @@ def run_annotate(
         ["transcript_id", "shared_junctions", "parent_overlap_bp"]
     ]
     merged = merged.merge(classify_meta, on="transcript_id", how="left")
+
+    if pfam_hmm_path is not None and genome_path is not None:
+        pfam_df = pfam_scan(merged, reference, pfam_hmm_path, genome_path)
+        merged = merged.merge(pfam_df, on="transcript_id", how="left")
+    for col in _PFAM_COLUMNS:
+        if col not in merged.columns:
+            merged[col] = [[] for _ in range(len(merged))]
+        else:
+            merged[col] = merged[col].apply(lambda v: v if isinstance(v, list) else [])
 
     merged = merged.reindex(columns=_OUTPUT_COLUMNS)
 

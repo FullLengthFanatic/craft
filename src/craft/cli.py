@@ -39,6 +39,13 @@ def cli() -> None:
     help="Optional per-cell isoform count matrix (h5ad / MTX) for sc workflows.",
 )
 @click.option(
+    "--pfam-hmm",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional Pfam-A.hmm file. When provided, isoforms are scanned for "
+    "Pfam domains and compared to the parent transcript's domain set.",
+)
+@click.option(
     "--output-dir",
     type=click.Path(file_okay=False, path_type=Path),
     required=True,
@@ -49,6 +56,7 @@ def annotate(
     reference: Path,
     genome: Path,
     counts: Path | None,
+    pfam_hmm: Path | None,
     output_dir: Path,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
@@ -58,5 +66,6 @@ def annotate(
         output_dir=output_dir,
         genome_path=genome,
         counts_path=counts,
+        pfam_hmm_path=pfam_hmm,
     )
     click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")

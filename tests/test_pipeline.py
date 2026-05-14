@@ -170,6 +170,60 @@ def test_pipeline_creates_output_directory(pipeline_inputs: dict[str, Path]) -> 
     assert (nested / "per_isoform.tsv").exists()
 
 
+def test_pipeline_pfam_columns_populate_when_hmm_provided(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    """When --pfam-hmm is supplied, the per-isoform table includes domain columns."""
+    from tests.test_pfam import _DNA, _rc, _write_test_hmm
+
+    # Replace chr1 sequence so positions 100-178 encode the test protein, and
+    # set t_parent's CDS to that range.
+    hmm_path = tmp_path / "test.hmm"
+    _write_test_hmm(hmm_path)
+
+    # Rebuild the FASTA with a chr1 that actually encodes the test protein in
+    # the 100-178 window so propagation -> protein matches the HMM.
+    new_chr1 = ("N" * 100) + _DNA + ("N" * 22)
+    chr2_seq = "ATG" + ("GCC" * 59) + "TAA" + ("G" * 17)
+    fasta_path = pipeline_inputs["genome"]
+    fasta_path.write_text(f">chr1\n{new_chr1}\n>chr2\n{chr2_seq}\n")
+    fai = Path(str(fasta_path) + ".fai")
+    if fai.exists():
+        fai.unlink()
+    import pysam
+    pysam.faidx(str(fasta_path))
+
+    # Adjust the reference + iso GTFs so chr1 t_parent encodes the matching
+    # protein at positions 101..178 (1-based GTF).
+    ref_rows = [
+        'chr1\tCRAFT\tgene\t101\t200\t.\t+\t.\tgene_id "g1";',
+        'chr1\tCRAFT\ttranscript\t101\t200\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t101\t178\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+    ]
+    pipeline_inputs["reference"].write_text("\n".join(ref_rows) + "\n")
+
+    iso_rows = [
+        'chr1\tFLAIR\texon\t101\t200\t.\t+\t.\ttranscript_id "t_intact";',
+        'chr2\tFLAIR\texon\t1\t200\t.\t+\t.\ttranscript_id "t_novel";',
+    ]
+    pipeline_inputs["isoforms"].write_text("\n".join(iso_rows) + "\n")
+
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        pfam_hmm_path=hmm_path,
+    )
+    intact = result[result["transcript_id"] == "t_intact"].iloc[0]
+    assert intact["pfam_preserved"] == ["TEST_DOMAIN"]
+    assert intact["pfam_lost"] == []
+
+    # Unused import marker.
+    _ = _rc
+
+
 def test_pipeline_cli_smoke(pipeline_inputs: dict[str, Path]) -> None:
     """Smoke-test the CLI entry point with click's testing harness."""
     from click.testing import CliRunner
