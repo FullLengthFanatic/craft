@@ -16,6 +16,8 @@ from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.utr3 import annotate as utr3_annotate
+from craft.export.anndata import to_anndata, write_h5ad
+from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
 from craft.report.html import render as render_report
 
@@ -107,7 +109,7 @@ def run_annotate(
     reference_path: Path,
     output_dir: Path,
     genome_path: Path | None = None,
-    counts_path: Path | None = None,  # noqa: ARG001  # reserved for AnnData export
+    counts_path: Path | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -188,6 +190,10 @@ def run_annotate(
     merged = merged.merge(classify_meta, on="transcript_id", how="left")
 
     merged = merged.reindex(columns=_OUTPUT_COLUMNS)
+
+    counts_adata = load_counts(counts_path) if counts_path is not None else None
+    adata = to_anndata(merged, counts=counts_adata)
+    write_h5ad(adata, output_dir / "annotated.h5ad")
 
     _write_outputs(merged, output_dir)
     return merged
