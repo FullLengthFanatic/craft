@@ -17,6 +17,7 @@ from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.io.gtf import load_isoforms, load_reference
+from craft.report.html import render as render_report
 
 _LIST_COLUMNS = ("propagated_cds_intervals", "denovo_cds_intervals")
 
@@ -204,3 +205,5 @@ def _write_outputs(merged: pd.DataFrame, output_dir: Path) -> None:
     records = merged.to_dict(orient="records")
     with open(output_dir / "per_isoform.json", "w") as fh:
         json.dump(records, fh, default=str, indent=2)
+
+    render_report(merged, output_dir / "report.html")

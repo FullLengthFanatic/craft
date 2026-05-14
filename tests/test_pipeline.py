@@ -93,8 +93,10 @@ def test_pipeline_writes_tsv_and_json(pipeline_inputs: dict[str, Path]) -> None:
     )
     tsv = pipeline_inputs["output_dir"] / "per_isoform.tsv"
     js = pipeline_inputs["output_dir"] / "per_isoform.json"
+    html = pipeline_inputs["output_dir"] / "report.html"
     assert tsv.exists()
     assert js.exists()
+    assert html.exists()
 
     loaded_tsv = pd.read_csv(tsv, sep="\t")
     assert len(loaded_tsv) == 2
