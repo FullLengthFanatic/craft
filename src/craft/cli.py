@@ -4,6 +4,8 @@ from pathlib import Path
 
 import click
 
+from craft.pipeline import run_annotate
+
 
 @click.group()
 @click.version_option(package_name="craft")
@@ -32,7 +34,7 @@ def cli() -> None:
 )
 @click.option(
     "--counts",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(exists=True, path_type=Path),
     default=None,
     help="Optional per-cell isoform count matrix (h5ad / MTX) for sc workflows.",
 )
@@ -50,4 +52,11 @@ def annotate(
     output_dir: Path,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
-    raise NotImplementedError("annotate command not yet implemented")
+    result = run_annotate(
+        isoforms_path=isoforms,
+        reference_path=reference,
+        output_dir=output_dir,
+        genome_path=genome,
+        counts_path=counts,
+    )
+    click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")
