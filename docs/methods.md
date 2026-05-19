@@ -539,7 +539,7 @@ override.
 
 CRAFT writes four files to `output_dir/`:
 
-### `per_isoform.tsv` (one row per isoform, 30 columns)
+### `per_isoform.tsv` (one row per isoform, 32 columns; 37 with `--pfam-hmm`)
 
 The full annotation table. List-valued columns (CDS intervals, Pfam
 domain lists) are JSON-encoded so the TSV is grep-friendly while still
@@ -548,11 +548,13 @@ being round-trippable.
 | Column                          | Source                | Type      | Meaning                                                                  |
 | ------------------------------- | --------------------- | --------- | ------------------------------------------------------------------------ |
 | `transcript_id`                 | iso GTF               | string    | iso identifier                                                           |
-| `completeness`                  | completeness          | category  | full_length / truncated_5p / 3p / both / internal_fragment / novel_no_match |
+| `completeness`                  | completeness          | category  | full_length / truncated_5p / 3p / alt_3prime_end / truncated_both / internal_fragment / novel_no_match |
 | `parent_tx_id`                  | completeness          | string    | best-matching reference transcript_id; "" if none                       |
+| `parent_gene_id`                | pipeline lookup       | string    | reference `gene_id` for the parent transcript (looked up from the reference GTF) |
+| `parent_gene_name`              | pipeline lookup       | string    | reference `gene_name` for the parent (empty when the reference GTF lacks it)    |
 | `shared_junctions`              | completeness          | int       | exactly-shared splice junctions with parent                              |
 | `parent_overlap_bp`             | completeness          | int       | total stranded exon overlap with parent                                  |
-| `orf_outcome`                   | propagation           | category  | propagated_intact / disrupted / start_lost / stop_not_observed / no_parent / no_parent_cds |
+| `orf_outcome`                   | propagation           | category  | propagated_intact / stop_at_alt_polya / stop_not_observed / disrupted / start_lost / no_parent / no_parent_cds |
 | `propagated_cds_bp`             | propagation           | int       | bp of parent CDS preserved in iso                                        |
 | `parent_cds_bp`                 | propagation           | int       | parent's total CDS bp                                                    |
 | `start_codon_covered`           | propagation           | bool      | iso exons span the parent's start codon position                         |
@@ -593,10 +595,41 @@ programmatic consumers.
 
 ### `report.html`
 
-Self-contained interactive HTML: summary cards + plotly bar charts of
-the categorical distributions (completeness, ORF outcome, NMD status,
-ORF confidence) + a per-isoform table. Plotly.js is inlined; no CDN
-required.
+Self-contained interactive HTML. Three sections:
+
+1. **Summary cards** — per-category counts and percentages for
+   completeness, ORF outcome, NMD status, and ORF confidence.
+2. **Distributions** — plotly bar charts of the same four categorical
+   fields. Plotly.js is inlined in the first figure block (single
+   `#5b7a9d` slate fill across all charts); no CDN required.
+3. **Notable findings** — three small focused tables instead of a
+   per-isoform dump (the full data lives in `per_isoform.tsv`):
+
+   - **Top NMD-sensitive isoforms** (max 10 rows): isoforms where
+     `nmd_status == "sensitive" AND nmd_confidence == "high"`, sorted
+     by `orf_confidence_score` descending. Filters to the
+     biologically-trustworthy NMD substrates.
+   - **Top ORF-disrupted isoforms** (max 10 rows): isoforms where
+     `orf_outcome == "disrupted" AND orf_confidence == "high"`, sorted
+     by `(parent_cds_bp - propagated_cds_bp)` descending. Surfaces the
+     iso/parent pairs where the most CDS bp were lost in the
+     structural change.
+   - **Genes with most functional isoform diversity** (max 10 rows):
+     for each parent gene, the number of *distinct*
+     `(parent_tx_id, orf_outcome)` pairs among isoforms with
+     `orf_confidence in {"high", "medium"}`. This deliberately collapses
+     the PacBio-collapse over-fragmentation noise: a gene with 50 PB.X.Y
+     entries that all map to the same parent transcript with the same
+     ORF outcome counts as 1 functional variant, not 50. Raw isoform
+     row counts per gene routinely hit 200+ in oligo-dT primed
+     long-read data because of bp-level TSS/TES variability; the
+     distinct-functional-variant count is in the low double digits even
+     for the most diverse genes on chr22 (top: RABL2B with 16).
+
+Each section is skipped if its filtered set is empty (e.g. no NMD-sensitive
+isoforms, no `parent_gene_id` column, no high/medium-confidence rows). If
+all three are empty the section shows a "no notable findings" message
+pointing readers at the TSV.
 
 ### `annotated.h5ad`
 
