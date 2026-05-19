@@ -61,3 +61,10 @@ Thumbs.db
 out/
 output/
 results/
+
+# CRAFT outputs
+per_isoform.tsv
+per_isoform.json
+report.html
+annotated.h5ad
+craft_out*/
