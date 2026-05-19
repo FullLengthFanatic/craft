@@ -2,47 +2,133 @@
 
 **Coding Region Annotation From Templates**
 
-A Python toolkit for long-read isoform functional-consequence annotation with truncation-aware ORF propagation.
+![status](https://img.shields.io/badge/status-pre--alpha-orange)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![python](https://img.shields.io/badge/python-3.10%2B-blue)
 
-## Status
+A Python toolkit for long-read isoform functional-consequence annotation. Takes
+the output of any long-read isoform caller (FLAIR, IsoQuant, Bambu, FLAMES,
+SQANTI3, isoseq+pigeon) and emits per-isoform structural completeness, ORF
+status, NMD susceptibility, 3' UTR features, and (optionally) Pfam domain
+preservation.
 
-Pre-alpha (v0.1.0). Repository scaffold only; modules are typed stubs awaiting implementation. See `/home/simone.picelli/.claude/plans/i-want-you-to-foamy-micali.md` for the full v1 plan.
+The methods novelty is **reference-isoform ORF propagation with truncation-aware
+confidence**. When an iso is truncated but still covers the parent transcript's
+CDS region, CRAFT projects the parent's ORF coordinates onto the iso and flags
+exactly where the call becomes uncertain (start codon outside the read, stop
+codon outside the read, structural divergence in CDS). De-novo ORF prediction is
+used only as a fallback for genuinely novel isoforms.
 
-## Overview
+For the full method, every category definition, and the rationale for every
+design choice, read [`docs/methods.md`](docs/methods.md).
 
-CRAFT takes long-read isoform calls (FLAIR, IsoQuant, Bambu, FLAMES, SQANTI3 output) and emits per-isoform functional consequences: ORF prediction (with reference-isoform propagation under truncation), NMD susceptibility, Pfam domain disruption, and 3' UTR feature changes. Outputs include a per-isoform TSV, an AnnData/MuData file for downstream single-cell analysis, and an interactive HTML report.
-
-The methods novelty is **reference-isoform ORF propagation with truncation-aware confidence**: novel single-cell long-read isoforms commonly arrive truncated, and CRAFT propagates ORF coordinates from the parent annotated transcript where structure is preserved, with explicit confidence flags that drop when key structural regions (start codon, stop codon, last junction) are not observed in the read.
-
-## Installation
+## Install
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-(Conda and Docker installs to come.)
+Requires Python ≥ 3.10. Runtime dependencies: pysam, pyranges, pandas, plotly,
+pyhmmer, orfipy, anndata, click. No R, no Java, no scanpy.
 
 ## Quick start
 
 ```bash
 craft annotate \
-    --isoforms isoforms.gtf \
-    --reference gencode.v44.annotation.gtf \
-    --genome hg38.fa \
+    --isoforms  /path/to/iso.gtf \
+    --reference /path/to/gencode.v45.annotation.gtf \
+    --genome    /path/to/GRCh38.fa \
     --output-dir out/
 ```
 
+Optional flags:
+
+- `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`.
+- `--pfam-hmm Pfam-A.hmm` enables Pfam domain preservation analysis (slow with
+  full Pfam; v1.5 will switch to `hmmscan` against a pressed database).
+
+Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~1 minute.
+Full-genome scale (~600k iso rows) is roughly 10-15 minutes without `--pfam-hmm`.
+
+## Inputs
+
+| Input            | Required | Format                                           |
+| ---------------- | -------- | ------------------------------------------------ |
+| Isoform GTF      | yes      | GTF with `exon` rows and a `transcript_id` attr  |
+| Reference GTF    | yes      | GTF with `exon` AND `CDS` rows (GENCODE/Ensembl) |
+| Genome FASTA     | yes      | indexed (`.fai` built on-the-fly if missing)     |
+| Per-cell counts  | no       | `.h5ad` or 10x-style MTX directory               |
+| Pfam HMM         | no       | pyhmmer-compatible `.hmm` (e.g. `Pfam-A.hmm`)    |
+
+All three required inputs must use the same chromosome naming (`chr1` vs `1`).
+
 ## Outputs
 
-- `per_isoform.tsv` — every functional annotation with confidence flags
-- `per_isoform.json` — same data, programmatic consumers
-- `annotated.h5ad` — AnnData with isoforms as `var`, functional features as `var` columns
-- `report.html` — self-contained interactive plotly report
+Four files in `output-dir/`:
+
+| File                 | Description                                                              |
+| -------------------- | ------------------------------------------------------------------------ |
+| `per_isoform.tsv`    | per-iso annotation table, 30 columns, list columns JSON-encoded          |
+| `per_isoform.json`   | same content as records; list columns stay as lists                      |
+| `report.html`        | self-contained interactive report (summary cards + plotly + table)       |
+| `annotated.h5ad`     | AnnData with iso annotations in `var`, per-cell counts in `X` (if given) |
+
+Every column is documented in
+[`docs/methods.md`](docs/methods.md#output-schema).
+
+## Filter recipes
+
+```python
+import pandas as pd
+df = pd.read_csv("out/per_isoform.tsv", sep="\t")
+
+# trustworthy ORF calls
+df[df["orf_confidence"].isin(["high", "medium"])]
+
+# biological NMD substrates (not truncation artefacts)
+df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
+
+# alternative 3' UTR isoforms with a canonical poly(A) signal
+df[(df["utr3_length_delta_nt"] != 0) & (df["polya_signal_motif"] != "")]
+
+# novel coding isoforms supported by a de-novo ORF
+df[(df["orf_outcome"] == "no_parent") & (df["denovo_orf_found"])]
+```
+
+## How it works (one paragraph)
+
+For each iso: pick the best-matching reference parent by maximal splice-junction
+sharing. Classify the iso's structural completeness from its end positions vs
+the parent's. Propagate the parent's CDS coordinates onto the iso, flagging
+cases where the start or stop codon falls outside the read. Apply NMD rules to
+the resulting stop position (50nt PTC rule + start-proximal, long-last-exon,
+and last-exon escapes). Compute 3' UTR length delta and scan for canonical
+poly(A) signals. Optionally translate the propagated CDS and scan against a
+Pfam HMM database. Emit TSV, JSON, HTML report, and AnnData.
+
+For the full algorithm, threshold defaults, and design rationale, see
+[`docs/methods.md`](docs/methods.md).
+
+## What CRAFT does *not* do
+
+- It does not do structural QC. The iso GTF is assumed to be post-QC (e.g.,
+  pigeon, SQANTI3-curated). CRAFT describes what's there, it doesn't filter.
+- It does not detect intron retention inside the CDS yet (v1.5).
+- It does not do single-cell isoform-aware cell-type calling. That's a planned
+  separate tool that consumes CRAFT's `annotated.h5ad`.
+- It does not harmonise chromosome naming. All three inputs must agree.
+
+## Status
+
+Pre-alpha (v0.1.0). The pipeline composes end-to-end on real long-read isoform
+GTFs. Smoke-tested on a PacBio Iso-Seq sample (chr22 subset, ~13k isoforms).
+Methods paper in preparation: benchmarking reference-isoform ORF propagation vs
+de-novo prediction on simulated truncated reads.
 
 ## Citation
 
-See `CITATION.cff`.
+See [`CITATION.cff`](CITATION.cff).
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).
