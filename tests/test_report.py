@@ -200,8 +200,73 @@ def test_render_includes_gene_diversity_section_when_gene_id_present(
     output = tmp_path / "report.html"
     render(df, output)
     html = output.read_text()
-    assert "Genes with most isoform diversity" in html
+    assert "Genes with most functional isoform diversity" in html
     assert "GENE1" in html
+
+
+def test_render_gene_diversity_collapses_duplicate_functional_variants(
+    tmp_path: Path,
+) -> None:
+    """Two isoforms with the same (parent_tx_id, orf_outcome) count as one
+    functional variant; differing on either dimension counts as two."""
+    base = {
+        "completeness": "full_length",
+        "nmd_status": "escaped",
+        "nmd_confidence": "high",
+        "orf_confidence": "high",
+        "orf_confidence_score": 1.0,
+    }
+    df = pd.DataFrame(
+        [
+            # gALPHA: two isos with identical (parent_tx_id, orf_outcome) -> 1 variant.
+            {**base, "transcript_id": "t1a", "parent_gene_id": "gALPHA",
+             "parent_gene_name": "GENEALPHA", "parent_tx_id": "t_ref_a",
+             "orf_outcome": "propagated_intact"},
+            {**base, "transcript_id": "t1b", "parent_gene_id": "gALPHA",
+             "parent_gene_name": "GENEALPHA", "parent_tx_id": "t_ref_a",
+             "orf_outcome": "propagated_intact"},
+            # gBETA: two isos with different parent_tx_ids -> 2 variants.
+            {**base, "transcript_id": "t2a", "parent_gene_id": "gBETA",
+             "parent_gene_name": "GENEBETA", "parent_tx_id": "t_ref_b",
+             "orf_outcome": "propagated_intact"},
+            {**base, "transcript_id": "t2b", "parent_gene_id": "gBETA",
+             "parent_gene_name": "GENEBETA", "parent_tx_id": "t_ref_c",
+             "orf_outcome": "propagated_intact"},
+        ]
+    )
+    output = tmp_path / "report.html"
+    render(df, output)
+    html = output.read_text()
+    # Search inside the diversity table's HTML (after its heading) to avoid
+    # matches in plotly's inlined JS, which is dumped earlier in the file.
+    section_start = html.find("Genes with most functional isoform diversity")
+    assert section_start != -1
+    section = html[section_start:]
+    alpha_pos = section.find("GENEALPHA")
+    beta_pos = section.find("GENEBETA")
+    assert alpha_pos != -1 and beta_pos != -1
+    assert beta_pos < alpha_pos, "Gene with more functional variants should rank first"
+
+
+def test_render_gene_diversity_filters_out_low_confidence(tmp_path: Path) -> None:
+    """LOW-confidence isoforms should NOT count toward gene diversity."""
+    df = pd.DataFrame(
+        [
+            {
+                "transcript_id": "t1", "parent_gene_id": "g1",
+                "parent_gene_name": "ONLYLOW", "parent_tx_id": "t_ref",
+                "orf_outcome": "no_parent_cds", "orf_confidence": "low",
+                "completeness": "full_length", "nmd_status": "not_applicable",
+                "nmd_confidence": "none",
+            },
+        ]
+    )
+    output = tmp_path / "report.html"
+    render(df, output)
+    html = output.read_text()
+    # No high/medium confidence isoforms -> gene diversity section absent.
+    assert "Genes with most functional isoform diversity" not in html
+    assert "ONLYLOW" not in html
 
 
 def test_render_shows_fallback_when_no_findings(tmp_path: Path) -> None:

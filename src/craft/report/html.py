@@ -180,23 +180,49 @@ def _top_disrupted(df: pd.DataFrame) -> tuple[str, int]:
 
 
 def _top_isoform_diversity(df: pd.DataFrame) -> tuple[str, int]:
-    if "parent_gene_id" not in df.columns:
+    """Distinct functional variants per parent gene.
+
+    Counts unique ``(parent_tx_id, orf_outcome)`` pairs per
+    ``parent_gene_id``, restricted to isoforms with high or medium ORF
+    confidence. This collapses the PacBio-collapse over-fragmentation noise
+    (50 PB.X.Y entries that all map to the same parent transcript with the
+    same outcome collapse to a single functional variant).
+    """
+    required = {"parent_gene_id", "parent_tx_id", "orf_outcome", "orf_confidence"}
+    if not required.issubset(df.columns):
         return "", 0
-    gene_col = df["parent_gene_id"].astype(str)
-    valid = df[gene_col != ""]
-    if valid.empty:
+    sub = df[df["orf_confidence"].isin(["high", "medium"])].copy()
+    sub["parent_gene_id"] = sub["parent_gene_id"].astype(str)
+    sub = sub[sub["parent_gene_id"] != ""]
+    if sub.empty:
         return "", 0
-    counts = valid.groupby("parent_gene_id").size().rename("n_isoforms").reset_index()
-    if "parent_gene_name" in valid.columns:
+
+    distinct_pairs = sub[
+        ["parent_gene_id", "parent_tx_id", "orf_outcome"]
+    ].drop_duplicates()
+    diversity = (
+        distinct_pairs.groupby("parent_gene_id")
+        .size()
+        .rename("n_functional_variants")
+        .reset_index()
+    )
+
+    if "parent_gene_name" in sub.columns:
         names = (
-            valid.drop_duplicates("parent_gene_id")
+            sub.drop_duplicates("parent_gene_id")
             .set_index("parent_gene_id")["parent_gene_name"]
             .to_dict()
         )
-        counts["parent_gene_name"] = counts["parent_gene_id"].map(names).fillna("")
-    counts = counts.sort_values("n_isoforms", ascending=False).head(_NOTABLE_TOP_N)
-    cols = ["parent_gene_name", "parent_gene_id", "n_isoforms"]
-    return _small_table_html(counts, cols), len(valid["parent_gene_id"].unique())
+        diversity["parent_gene_name"] = diversity["parent_gene_id"].map(names).fillna("")
+
+    diversity = diversity.sort_values("n_functional_variants", ascending=False).head(
+        _NOTABLE_TOP_N
+    )
+    cols = ["parent_gene_name", "parent_gene_id", "n_functional_variants"]
+    total = (
+        int(diversity["n_functional_variants"].sum()) if not diversity.empty else 0
+    )
+    return _small_table_html(diversity, cols), total
 
 
 def _notable_findings_html(df: pd.DataFrame) -> str:
@@ -216,11 +242,14 @@ def _notable_findings_html(df: pd.DataFrame) -> str:
             f'total high-confidence)</span></h3>{disrupted_html}'
         )
 
-    diversity_html, gene_total = _top_isoform_diversity(df)
+    diversity_html, variant_total = _top_isoform_diversity(df)
     if diversity_html:
         sections.append(
-            f'<h3>Genes with most isoform diversity <span class="count">({gene_total} '
-            f'genes with a parent annotation)</span></h3>{diversity_html}'
+            f'<h3>Genes with most functional isoform diversity '
+            f'<span class="count">(distinct (parent_tx, orf_outcome) pairs '
+            f'among high/medium-confidence isoforms; '
+            f'{variant_total} variants in top {_NOTABLE_TOP_N})</span></h3>'
+            f'{diversity_html}'
         )
 
     if not sections:
