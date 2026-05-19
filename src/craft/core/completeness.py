@@ -17,6 +17,7 @@ class Completeness(str, Enum):
     TRUNCATED_BOTH = "truncated_both"
     INTERNAL_FRAGMENT = "internal_fragment"
     NOVEL_NO_MATCH = "novel_no_match"
+    ALT_3PRIME_END = "alt_3prime_end"
 
 
 def _transcript_spans(exons: pr.PyRanges) -> pd.DataFrame:

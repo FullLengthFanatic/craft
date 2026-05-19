@@ -47,7 +47,7 @@ def load_reference(path: Path) -> pr.PyRanges:
 
     Filters to ``Feature in {"exon", "CDS"}`` rows and returns a PyRanges with
     columns ``Chromosome``, ``Start``, ``End``, ``Strand``, ``transcript_id``,
-    ``Feature``.
+    ``Feature``, ``gene_id``, and (if the GTF has it) ``gene_name``.
 
     Args:
         path: GTF file path (plain or gzipped).
@@ -58,6 +58,7 @@ def load_reference(path: Path) -> pr.PyRanges:
     gr = pr.read_gtf(str(path))
     df = gr.df
     df = df[df["Feature"].isin(["exon", "CDS"])]
-    return _normalise(
-        df, ["Chromosome", "Start", "End", "Strand", "transcript_id", "Feature"]
-    )
+    columns = ["Chromosome", "Start", "End", "Strand", "transcript_id", "Feature", "gene_id"]
+    if "gene_name" in df.columns:
+        columns.append("gene_name")
+    return _normalise(df, columns)

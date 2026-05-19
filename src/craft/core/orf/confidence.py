@@ -10,6 +10,7 @@ MEDIUM_THRESHOLD = 0.5
 
 _BASE_BY_OUTCOME: dict[ORFOutcome, float] = {
     ORFOutcome.PROPAGATED_INTACT: 1.0,
+    ORFOutcome.STOP_AT_ALT_POLYA: 0.85,
     ORFOutcome.STOP_NOT_OBSERVED: 0.55,
     ORFOutcome.DISRUPTED: 0.45,
     ORFOutcome.START_LOST: 0.2,
@@ -17,6 +18,7 @@ _BASE_BY_OUTCOME: dict[ORFOutcome, float] = {
 
 _COMPLETENESS_FACTOR: dict[Completeness, float] = {
     Completeness.FULL_LENGTH: 1.0,
+    Completeness.ALT_3PRIME_END: 1.0,
     Completeness.TRUNCATED_5P: 0.9,
     Completeness.TRUNCATED_3P: 0.9,
     Completeness.TRUNCATED_BOTH: 0.65,

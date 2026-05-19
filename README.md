@@ -93,6 +93,9 @@ df[(df["utr3_length_delta_nt"] != 0) & (df["polya_signal_motif"] != "")]
 
 # novel coding isoforms supported by a de-novo ORF
 df[(df["orf_outcome"] == "no_parent") & (df["denovo_orf_found"])]
+
+# APA isoforms (alternative 3' end backed by a poly(A) signal)
+df[df["completeness"] == "alt_3prime_end"]
 ```
 
 ## How it works (one paragraph)

@@ -21,9 +21,7 @@ _SUMMARY_FIELDS = (
     ("orf_confidence", "ORF confidence"),
 )
 
-_HIDDEN_TABLE_COLUMNS = ("propagated_cds_intervals", "denovo_cds_intervals")
-
-_DEFAULT_TABLE_ROW_CAP = 1000
+_NOTABLE_TOP_N = 10
 
 _TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -56,21 +54,21 @@ _TEMPLATE = """<!DOCTYPE html>
     gap: 1em;
     margin: 1em 0 2em 0;
   }}
-  .table-container {{
-    max-height: 600px;
-    overflow: auto;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    margin-top: 1em;
+  table.craft-table {{
+    border-collapse: collapse;
+    font-size: 0.85em;
+    width: auto;
+    margin: 0.5em 0 1.5em 0;
   }}
-  table.craft-table {{ border-collapse: collapse; font-size: 0.83em; width: 100%; }}
   table.craft-table th, table.craft-table td {{
-    padding: 4px 8px;
+    padding: 4px 10px;
     border-bottom: 1px solid #eee;
     text-align: left;
     white-space: nowrap;
   }}
-  table.craft-table th {{ background: #f0f0f0; position: sticky; top: 0; z-index: 1; }}
+  table.craft-table th {{ background: #f0f0f0; }}
+  table.craft-table-compact td {{ font-variant-numeric: tabular-nums; }}
+  h3 .count {{ color: #888; font-weight: normal; font-size: 0.85em; }}
   .footer {{ color: #999; font-size: 0.8em; margin-top: 3em; }}
 </style>
 </head>
@@ -88,11 +86,8 @@ _TEMPLATE = """<!DOCTYPE html>
 {figure_blocks}
 </div>
 
-<h2>Per-isoform annotations</h2>
-{table_note}
-<div class="table-container">
-{table_html}
-</div>
+<h2>Notable findings</h2>
+{notable_findings}
 
 <p class="footer">CRAFT (Coding Region Annotation From Templates).</p>
 </body>
@@ -128,36 +123,121 @@ def _figure_block(fig, *, include_js: bool) -> str:
     )
 
 
-def _table_html(df: pd.DataFrame, row_cap: int) -> tuple[str, int]:
-    drop = [c for c in _HIDDEN_TABLE_COLUMNS if c in df.columns]
-    display = df.drop(columns=drop)
-    truncated_n = max(0, len(display) - row_cap)
-    if truncated_n:
-        display = display.head(row_cap)
-    return (
-        display.to_html(
-            index=False,
-            classes="craft-table",
-            border=0,
-            na_rep="",
-        ),
-        truncated_n,
+def _small_table_html(df: pd.DataFrame, columns: list[str]) -> str:
+    cols_present = [c for c in columns if c in df.columns]
+    return df[cols_present].to_html(
+        index=False,
+        classes="craft-table craft-table-compact",
+        border=0,
+        na_rep="-",
     )
 
 
-def render(
-    per_isoform: pd.DataFrame,
-    output: Path,
-    row_cap: int = _DEFAULT_TABLE_ROW_CAP,
-) -> None:
+def _top_nmd_sensitive(df: pd.DataFrame) -> tuple[str, int]:
+    if "nmd_status" not in df.columns or "nmd_confidence" not in df.columns:
+        return "", 0
+    sub = df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
+    n_total = len(sub)
+    if n_total == 0:
+        return "", 0
+    sort_col = "orf_confidence_score" if "orf_confidence_score" in sub.columns else None
+    top = sub.nlargest(_NOTABLE_TOP_N, sort_col) if sort_col else sub.head(_NOTABLE_TOP_N)
+    cols = [
+        "transcript_id",
+        "parent_gene_name",
+        "parent_tx_id",
+        "completeness",
+        "nmd_rule",
+        "stop_to_last_junction_nt",
+        "orf_confidence_score",
+    ]
+    return _small_table_html(top, cols), n_total
+
+
+def _top_disrupted(df: pd.DataFrame) -> tuple[str, int]:
+    if "orf_outcome" not in df.columns or "orf_confidence" not in df.columns:
+        return "", 0
+    sub = df[(df["orf_outcome"] == "disrupted") & (df["orf_confidence"] == "high")].copy()
+    n_total = len(sub)
+    if n_total == 0:
+        return "", 0
+    if {"parent_cds_bp", "propagated_cds_bp"}.issubset(sub.columns):
+        sub["cds_bp_lost"] = sub["parent_cds_bp"] - sub["propagated_cds_bp"]
+        top = sub.nlargest(_NOTABLE_TOP_N, "cds_bp_lost")
+    else:
+        top = sub.head(_NOTABLE_TOP_N)
+    cols = [
+        "transcript_id",
+        "parent_gene_name",
+        "parent_tx_id",
+        "completeness",
+        "propagated_cds_bp",
+        "parent_cds_bp",
+        "cds_bp_lost",
+        "pfam_lost",
+    ]
+    return _small_table_html(top, cols), n_total
+
+
+def _top_isoform_diversity(df: pd.DataFrame) -> tuple[str, int]:
+    if "parent_gene_id" not in df.columns:
+        return "", 0
+    gene_col = df["parent_gene_id"].astype(str)
+    valid = df[gene_col != ""]
+    if valid.empty:
+        return "", 0
+    counts = valid.groupby("parent_gene_id").size().rename("n_isoforms").reset_index()
+    if "parent_gene_name" in valid.columns:
+        names = (
+            valid.drop_duplicates("parent_gene_id")
+            .set_index("parent_gene_id")["parent_gene_name"]
+            .to_dict()
+        )
+        counts["parent_gene_name"] = counts["parent_gene_id"].map(names).fillna("")
+    counts = counts.sort_values("n_isoforms", ascending=False).head(_NOTABLE_TOP_N)
+    cols = ["parent_gene_name", "parent_gene_id", "n_isoforms"]
+    return _small_table_html(counts, cols), len(valid["parent_gene_id"].unique())
+
+
+def _notable_findings_html(df: pd.DataFrame) -> str:
+    sections: list[str] = []
+
+    nmd_html, nmd_total = _top_nmd_sensitive(df)
+    if nmd_html:
+        sections.append(
+            f'<h3>Top NMD-sensitive isoforms <span class="count">({nmd_total} '
+            f'total high-confidence)</span></h3>{nmd_html}'
+        )
+
+    disrupted_html, disrupted_total = _top_disrupted(df)
+    if disrupted_html:
+        sections.append(
+            f'<h3>Top ORF-disrupted isoforms <span class="count">({disrupted_total} '
+            f'total high-confidence)</span></h3>{disrupted_html}'
+        )
+
+    diversity_html, gene_total = _top_isoform_diversity(df)
+    if diversity_html:
+        sections.append(
+            f'<h3>Genes with most isoform diversity <span class="count">({gene_total} '
+            f'genes with a parent annotation)</span></h3>{diversity_html}'
+        )
+
+    if not sections:
+        return (
+            '<p class="meta">No notable findings to surface. See '
+            '<code>per_isoform.tsv</code> for the full per-isoform table.</p>'
+        )
+    return "\n".join(sections)
+
+
+def render(per_isoform: pd.DataFrame, output: Path) -> None:
     """Render the interactive HTML report.
 
     Args:
         per_isoform: Per-isoform annotation table (output of
             :func:`craft.pipeline.run_annotate`).
         output: Destination ``.html`` path. Parent directories are created.
-        row_cap: Maximum rows shown in the per-isoform table. Excess rows are
-            truncated with a note; the full data is in the companion TSV/JSON.
     """
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -175,13 +255,7 @@ def render(
         for i, (_, fig) in enumerate(figs)
     )
 
-    table_html, truncated = _table_html(per_isoform, row_cap)
-    table_note = (
-        f"<p class='meta'>Showing first {row_cap} of {n_isoforms} isoforms. "
-        f"See the TSV/JSON for the full table.</p>"
-        if truncated
-        else ""
-    )
+    notable_findings = _notable_findings_html(per_isoform)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     html = _TEMPLATE.format(
@@ -190,7 +264,6 @@ def render(
         n_isoforms=n_isoforms,
         summary_cards=summary_cards,
         figure_blocks=figure_blocks,
-        table_note=table_note,
-        table_html=table_html,
+        notable_findings=notable_findings,
     )
     output.write_text(html)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyranges as pr
+import pysam
 
 from craft.core.completeness import Completeness, classify
 from craft.core.nmd import predict as nmd_predict
@@ -17,6 +18,7 @@ from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.pfam import scan as pfam_scan
 from craft.core.utr3 import annotate as utr3_annotate
+from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
 from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
@@ -44,6 +46,8 @@ _OUTPUT_COLUMNS = [
     "transcript_id",
     "completeness",
     "parent_tx_id",
+    "parent_gene_id",
+    "parent_gene_name",
     "shared_junctions",
     "parent_overlap_bp",
     "orf_outcome",
@@ -112,6 +116,57 @@ def _confidence_for(
     return category.value, score_value
 
 
+def _compute_polya_evidence(
+    isoforms: pr.PyRanges, genome_path: Path
+) -> dict[str, bool]:
+    """For every iso transcript_id, True iff a canonical poly(A) signal sits
+    in the last 50 nt of its 3' end (transcript orientation)."""
+    iso_df = isoforms.df
+    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
+    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+    evidence: dict[str, bool] = {}
+    with pysam.FastaFile(str(genome_path)) as genome:
+        for tx_id, exons in iso_exons_by_tx.items():
+            sig = polya_near_3prime_end(exons, str(iso_strand[tx_id]), genome)
+            evidence[str(tx_id)] = bool(sig["found"])
+    return evidence
+
+
+def _reclassify_with_polya(
+    classified: pr.PyRanges,
+    propagated: pd.DataFrame,
+    polya_evidence: dict[str, bool],
+) -> tuple[pr.PyRanges, pd.DataFrame]:
+    """Use poly(A) signal evidence to relabel APA isoforms previously called
+    truncations: TRUNCATED_3P -> ALT_3PRIME_END, STOP_NOT_OBSERVED -> STOP_AT_ALT_POLYA."""
+
+    cls_df = classified.df.copy()
+
+    def _new_completeness(row: pd.Series) -> str:
+        if (
+            row["completeness"] == Completeness.TRUNCATED_3P.value
+            and polya_evidence.get(str(row["transcript_id"]), False)
+        ):
+            return Completeness.ALT_3PRIME_END.value
+        return str(row["completeness"])
+
+    cls_df["completeness"] = cls_df.apply(_new_completeness, axis=1)
+    classified = pr.PyRanges(cls_df)
+
+    propagated = propagated.copy()
+
+    def _new_outcome(row: pd.Series) -> str:
+        if (
+            row["orf_outcome"] == ORFOutcome.STOP_NOT_OBSERVED.value
+            and polya_evidence.get(str(row["transcript_id"]), False)
+        ):
+            return ORFOutcome.STOP_AT_ALT_POLYA.value
+        return str(row["orf_outcome"])
+
+    propagated["orf_outcome"] = propagated.apply(_new_outcome, axis=1)
+    return classified, propagated
+
+
 def _empty_denovo() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
@@ -157,6 +212,12 @@ def run_annotate(
     classified = classify(isoforms, _exon_only_reference(reference))
     propagated = propagate(classified, reference)
 
+    if genome_path is not None:
+        polya_evidence = _compute_polya_evidence(isoforms, genome_path)
+        classified, propagated = _reclassify_with_polya(
+            classified, propagated, polya_evidence
+        )
+
     orphan_ids = propagated.loc[
         propagated["orf_outcome"].isin(_DENOVO_TRIGGER_OUTCOMES),
         "transcript_id",
@@ -177,16 +238,13 @@ def run_annotate(
     if not denovo_df.empty:
         merged = merged.merge(denovo_df, on="transcript_id", how="left")
     else:
-        for col in _empty_denovo().columns:
-            if col == "transcript_id":
-                continue
-            merged[col] = (
-                False
-                if col == "denovo_orf_found"
-                else 0 if col in {"denovo_cds_bp", "denovo_orf_aa_length"}
-                else [] if col == "denovo_cds_intervals"
-                else ""
-            )
+        n = len(merged)
+        merged["denovo_orf_found"] = [False] * n
+        merged["denovo_cds_bp"] = [0] * n
+        merged["denovo_orf_aa_length"] = [0] * n
+        merged["denovo_cds_intervals"] = [[] for _ in range(n)]
+        merged["denovo_start_codon"] = [""] * n
+        merged["denovo_stop_codon"] = [""] * n
     merged = merged.merge(nmd_df, on="transcript_id", how="left")
     merged = merged.merge(utr3_df, on="transcript_id", how="left")
 
@@ -211,6 +269,29 @@ def run_annotate(
         ["transcript_id", "shared_junctions", "parent_overlap_bp"]
     ]
     merged = merged.merge(classify_meta, on="transcript_id", how="left")
+
+    # Look up parent gene from reference for the report's notable-findings panel.
+    ref_df = reference.df
+    gene_id_map: dict[str, str] = {}
+    gene_name_map: dict[str, str] = {}
+    if "gene_id" in ref_df.columns:
+        gene_id_map = (
+            ref_df[["transcript_id", "gene_id"]]
+            .dropna()
+            .drop_duplicates()
+            .set_index("transcript_id")["gene_id"]
+            .to_dict()
+        )
+    if "gene_name" in ref_df.columns:
+        gene_name_map = (
+            ref_df[["transcript_id", "gene_name"]]
+            .dropna()
+            .drop_duplicates()
+            .set_index("transcript_id")["gene_name"]
+            .to_dict()
+        )
+    merged["parent_gene_id"] = merged["parent_tx_id"].map(gene_id_map).fillna("")
+    merged["parent_gene_name"] = merged["parent_tx_id"].map(gene_name_map).fillna("")
 
     if pfam_hmm_path is not None and genome_path is not None:
         pfam_df = pfam_scan(merged, reference, pfam_hmm_path, genome_path)

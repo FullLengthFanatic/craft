@@ -146,36 +146,16 @@ def test_render_contains_expected_sections(tmp_path: Path) -> None:
     assert "CRAFT annotation report" in html
     assert "Summary" in html
     assert "Distributions" in html
-    assert "Per-isoform annotations" in html
-
-
-def test_render_includes_transcript_ids_in_table(tmp_path: Path) -> None:
-    output = tmp_path / "report.html"
-    render(_example_df(), output)
-    html = output.read_text()
-    assert "t1" in html
-    assert "t2" in html
-    assert "t_novel" in html
+    assert "Notable findings" in html
 
 
 def test_render_summary_counts_appear_in_html(tmp_path: Path) -> None:
     output = tmp_path / "report.html"
     render(_example_df(), output)
     html = output.read_text()
-    # Two isoforms are full_length / truncated_5p; one is novel_no_match.
     assert "full_length" in html
     assert "truncated_5p" in html
     assert "novel_no_match" in html
-
-
-def test_render_drops_list_columns_from_table(tmp_path: Path) -> None:
-    output = tmp_path / "report.html"
-    render(_example_df(), output)
-    html = output.read_text()
-    # The list columns are dropped from the rendered table, but the column
-    # headers should not appear at all.
-    assert "propagated_cds_intervals" not in html
-    assert "denovo_cds_intervals" not in html
 
 
 def test_render_creates_nested_output_dir(tmp_path: Path) -> None:
@@ -189,15 +169,64 @@ def test_render_includes_plotly_js(tmp_path: Path) -> None:
     output = tmp_path / "report.html"
     render(_example_df(), output)
     html = output.read_text()
-    # Plotly's inlined JS contains the global Plotly namespace symbol.
     assert "Plotly" in html
 
 
-def test_render_row_cap_truncates_large_tables(tmp_path: Path) -> None:
-    # Make a 20-row df, cap at 5.
-    base = _example_df().iloc[0:1]
-    big = pd.concat([base.assign(transcript_id=f"t{i}") for i in range(20)], ignore_index=True)
+def test_render_includes_top_nmd_sensitive_section(tmp_path: Path) -> None:
+    """t2 is sensitive + high confidence in the example fixture."""
     output = tmp_path / "report.html"
-    render(big, output, row_cap=5)
+    render(_example_df(), output)
     html = output.read_text()
-    assert "Showing first 5 of 20" in html
+    assert "Top NMD-sensitive isoforms" in html
+    assert "t2" in html  # should appear in the NMD table
+
+
+def test_render_skips_empty_sections(tmp_path: Path) -> None:
+    """No 'disrupted' rows in the fixture; that section should be absent."""
+    output = tmp_path / "report.html"
+    render(_example_df(), output)
+    html = output.read_text()
+    assert "Top ORF-disrupted isoforms" not in html
+    # No gene_id in the fixture; diversity table should also be absent.
+    assert "Genes with most isoform diversity" not in html
+
+
+def test_render_includes_gene_diversity_section_when_gene_id_present(
+    tmp_path: Path,
+) -> None:
+    df = _example_df()
+    df["parent_gene_id"] = ["g1", "g1", ""]
+    df["parent_gene_name"] = ["GENE1", "GENE1", ""]
+    output = tmp_path / "report.html"
+    render(df, output)
+    html = output.read_text()
+    assert "Genes with most isoform diversity" in html
+    assert "GENE1" in html
+
+
+def test_render_shows_fallback_when_no_findings(tmp_path: Path) -> None:
+    """No NMD-sensitive, no disrupted, no gene_id -> fallback message."""
+    df = pd.DataFrame(
+        [
+            {
+                "transcript_id": "t1",
+                "completeness": "full_length",
+                "orf_outcome": "propagated_intact",
+                "orf_confidence": "high",
+                "nmd_status": "escaped",
+                "nmd_confidence": "high",
+            }
+        ]
+    )
+    output = tmp_path / "report.html"
+    render(df, output)
+    html = output.read_text()
+    assert "No notable findings" in html
+    assert "per_isoform.tsv" in html
+
+
+def test_bar_chart_uses_muted_color() -> None:
+    """Bar charts should not use plotly's default bright blue."""
+    fig = bar_chart({"a": 5, "b": 10}, "Test")
+    marker_color = fig.data[0].marker.color
+    assert marker_color == "#5b7a9d"

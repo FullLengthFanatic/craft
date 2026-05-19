@@ -170,6 +170,100 @@ def test_pipeline_creates_output_directory(pipeline_inputs: dict[str, Path]) -> 
     assert (nested / "per_isoform.tsv").exists()
 
 
+def test_pipeline_reclassifies_alt_polya_isoforms(tmp_path: Path) -> None:
+    """When the iso has a canonical poly(A) signal in its last 50 bp, the
+    pipeline should reclassify TRUNCATED_3P -> ALT_3PRIME_END and
+    STOP_NOT_OBSERVED -> STOP_AT_ALT_POLYA."""
+    import pysam as _pysam
+
+    # chr1 is 700 bp. Exon3 region (500-699) carries AATAAA at positions
+    # 510-516 (for the premature-stop iso) and 565-571 (for the post-stop iso).
+    exon3 = (
+        "C" * 10
+        + "AATAAA"
+        + "C" * 49
+        + "AATAAA"
+        + "C" * 129
+    )
+    assert len(exon3) == 200
+    chr1 = (
+        ("N" * 100)
+        + ("A" * 100)
+        + ("N" * 100)
+        + ("A" * 100)
+        + ("N" * 100)
+        + exon3
+    )
+    assert len(chr1) == 700
+
+    fasta_path = tmp_path / "genome.fa"
+    fasta_path.write_text(f">chr1\n{chr1}\n")
+    _pysam.faidx(str(fasta_path))
+
+    ref_rows = [
+        'chr1\tCRAFT\tgene\t101\t700\t.\t+\t.\tgene_id "g1";',
+        (
+            'chr1\tCRAFT\ttranscript\t101\t700\t.\t+\t.\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\texon\t501\t700\t.\t+\t.\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\tCDS\t151\t200\t.\t+\t0\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\tCDS\t301\t400\t.\t+\t0\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+        (
+            'chr1\tCRAFT\tCDS\t501\t530\t.\t+\t0\tgene_id "g1"; '
+            'transcript_id "t_parent"; gene_name "GENE1";'
+        ),
+    ]
+    ref_path = tmp_path / "reference.gtf"
+    ref_path.write_text("\n".join(ref_rows) + "\n")
+
+    iso_rows = [
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t501\t580\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\ttranscript_id "t_premature";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\ttranscript_id "t_premature";',
+        'chr1\tCRAFT\texon\t501\t525\t.\t+\t.\ttranscript_id "t_premature";',
+    ]
+    iso_path = tmp_path / "isoforms.gtf"
+    iso_path.write_text("\n".join(iso_rows) + "\n")
+
+    result = run_annotate(
+        isoforms_path=iso_path,
+        reference_path=ref_path,
+        output_dir=tmp_path / "out",
+        genome_path=fasta_path,
+    )
+
+    t_apa = result[result["transcript_id"] == "t_apa"].iloc[0]
+    assert t_apa["completeness"] == "alt_3prime_end"
+    assert t_apa["orf_outcome"] == "propagated_intact"
+    assert t_apa["orf_confidence"] == "high"
+    assert t_apa["parent_gene_name"] == "GENE1"
+
+    t_prem = result[result["transcript_id"] == "t_premature"].iloc[0]
+    assert t_prem["completeness"] == "alt_3prime_end"
+    assert t_prem["orf_outcome"] == "stop_at_alt_polya"
+    assert t_prem["orf_confidence"] == "high"
+
+
 def test_pipeline_pfam_columns_populate_when_hmm_provided(
     pipeline_inputs: dict[str, Path], tmp_path: Path
 ) -> None:

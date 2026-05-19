@@ -87,6 +87,68 @@ def _iso_stop_pos(intervals: list[tuple], strand: str) -> int:
     raise ValueError(f"Unsupported strand: {strand!r}")
 
 
+def polya_near_3prime_end(
+    exons: pd.DataFrame,
+    strand: str,
+    genome: pysam.FastaFile | Path,
+    window: int = 50,
+) -> dict:
+    """Scan the last ``window`` bp of the isoform (transcript orientation) for a poly(A) signal.
+
+    For oligo-dT primed long-read data, the iso's 3' end *is* the polyadenylation
+    site (the polyA tail was the priming substrate). A canonical poly(A) signal
+    motif sitting within ~10-30 nt upstream of the cleavage site is strong
+    biological evidence that the iso's 3' end reflects alternative
+    polyadenylation rather than technical truncation.
+
+    Args:
+        exons: PyRanges-style DataFrame of the isoform's exons (single
+            transcript_id).
+        strand: "+" or "-".
+        genome: either a path to an indexed FASTA, or an already-open
+            :class:`pysam.FastaFile` (preferred when calling per-isoform in a
+            loop to avoid repeated open/close).
+        window: nt window upstream of the iso's 3' end to scan. Default 50.
+
+    Returns:
+        Dict with keys ``motif`` (empty string if no signal), ``distance_from_3p_end``
+        (-1 if no signal), ``found`` (bool).
+    """
+    empty = {"motif": "", "distance_from_3p_end": -1, "found": False}
+    if len(exons) == 0:
+        return empty
+
+    if isinstance(genome, str | Path):
+        with pysam.FastaFile(str(genome)) as fh:
+            return polya_near_3prime_end(exons, strand, fh, window)
+
+    chrom = str(exons["Chromosome"].iloc[0])
+    sorted_exons = exons.sort_values("Start").reset_index(drop=True)
+    if strand == "+":
+        last_exon = sorted_exons.iloc[-1]
+        ex_start = int(last_exon["Start"])
+        ex_end = int(last_exon["End"])
+        fetch_start = max(ex_start, ex_end - window)
+        fetch_end = ex_end
+    elif strand == "-":
+        last_exon = sorted_exons.iloc[0]
+        ex_start = int(last_exon["Start"])
+        ex_end = int(last_exon["End"])
+        fetch_start = ex_start
+        fetch_end = min(ex_end, ex_start + window)
+    else:
+        raise ValueError(f"Unsupported strand: {strand!r}")
+
+    if fetch_end <= fetch_start:
+        return empty
+
+    seq = genome.fetch(chrom, fetch_start, fetch_end).upper()
+    if strand == "-":
+        seq = _reverse_complement(seq)
+    sig = polya_signal(seq)
+    return {**sig, "found": bool(sig["motif"])}
+
+
 def _extract_utr3_sequence(
     exons: pd.DataFrame,
     stop_pos: int,

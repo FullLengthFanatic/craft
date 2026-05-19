@@ -8,7 +8,7 @@ import pysam
 import pytest
 
 from craft.core.orf.propagation import ORFOutcome
-from craft.core.utr3 import annotate, polya_signal
+from craft.core.utr3 import annotate, polya_near_3prime_end, polya_signal
 
 
 def _iso_pr(records: list[tuple]) -> pr.PyRanges:
@@ -329,6 +329,53 @@ def test_polya_signal_extracted_from_minus_strand_utr(synthetic_genome: Path) ->
     row = result.iloc[0]
     assert int(row["iso_utr3_length_nt"]) == 30
     assert row["polya_signal_motif"] == "AATAAA"
+
+
+def test_polya_near_3prime_end_plus_strand_with_signal(
+    synthetic_genome: Path,
+) -> None:
+    # chr1 positions 30-59 contain "GCGCAATAAAGCGCGCGCGCGCGCGCGCGC".
+    # + strand iso (0, 60) has 3' end at 60; last 50 bp window is positions 10-60,
+    # which contains AATAAA.
+    exons = pd.DataFrame(
+        [{"Chromosome": "chr1", "Start": 0, "End": 60, "Strand": "+", "transcript_id": "t1"}]
+    )
+    result = polya_near_3prime_end(exons, "+", synthetic_genome)
+    assert result["found"] is True
+    assert result["motif"] == "AATAAA"
+
+
+def test_polya_near_3prime_end_minus_strand_with_signal(
+    synthetic_genome: Path,
+) -> None:
+    # chr2 positions 0-29 forward = "GCGCGCGCGCGCGCGCGCGCTTTATTGCGC",
+    # revcomp contains AATAAA. - strand iso (0, 60) sees this in transcript orientation.
+    exons = pd.DataFrame(
+        [{"Chromosome": "chr2", "Start": 0, "End": 60, "Strand": "-", "transcript_id": "t1"}]
+    )
+    result = polya_near_3prime_end(exons, "-", synthetic_genome)
+    assert result["found"] is True
+    assert result["motif"] == "AATAAA"
+
+
+def test_polya_near_3prime_end_no_signal(synthetic_genome: Path) -> None:
+    # chr1 positions 0-29 are all N (no motif). - strand iso ending there has no signal.
+    exons = pd.DataFrame(
+        [{"Chromosome": "chr1", "Start": 0, "End": 30, "Strand": "-", "transcript_id": "t1"}]
+    )
+    result = polya_near_3prime_end(exons, "-", synthetic_genome)
+    assert result["found"] is False
+    assert result["motif"] == ""
+
+
+def test_polya_near_3prime_end_accepts_path_argument(synthetic_genome: Path) -> None:
+    """Passing a Path works (function opens FASTA internally and closes it)."""
+    exons = pd.DataFrame(
+        [{"Chromosome": "chr1", "Start": 0, "End": 60, "Strand": "+", "transcript_id": "t1"}]
+    )
+    # Pass the Path object directly, not an open pysam.FastaFile handle.
+    result = polya_near_3prime_end(exons, "+", synthetic_genome)
+    assert result["found"] is True
 
 
 def test_polya_signal_motif_empty_when_utr_lacks_signal(synthetic_genome: Path) -> None:

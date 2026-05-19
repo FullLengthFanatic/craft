@@ -19,6 +19,7 @@ class ORFOutcome(str, Enum):
     DISRUPTED = "disrupted"
     START_LOST = "start_lost"
     STOP_NOT_OBSERVED = "stop_not_observed"
+    STOP_AT_ALT_POLYA = "stop_at_alt_polya"
     NO_PARENT = "no_parent"
     NO_PARENT_CDS = "no_parent_cds"
 

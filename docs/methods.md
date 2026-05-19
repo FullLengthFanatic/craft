@@ -154,14 +154,17 @@ relative to that parent.
 
 **Categories.** The enum has six values:
 
-| Category            | Meaning                                                       |
-| ------------------- | ------------------------------------------------------------- |
-| `full_length`       | iso spans the parent end-to-end (within tolerance)            |
-| `truncated_5p`      | iso 3' end matches parent; 5' end is interior                 |
-| `truncated_3p`      | iso 5' end matches parent; 3' end is interior                 |
-| `truncated_both`    | both ends interior to parent, but near at least one boundary  |
-| `internal_fragment` | both ends well-interior to parent (>2× tolerance from both)   |
-| `novel_no_match`    | no shared junctions AND no exon overlap with any reference tx |
+| Category            | Meaning                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| `full_length`       | iso spans the parent end-to-end (within tolerance)                                        |
+| `truncated_5p`      | iso 3' end matches parent; 5' end is interior                                             |
+| `truncated_3p`      | iso 5' end matches parent; 3' end is interior; NO canonical poly(A) signal in last 50 nt  |
+| `alt_3prime_end`    | iso 3' end is interior to parent, but a canonical poly(A) signal sits in the last 50 nt — biological APA, not technical truncation |
+| `truncated_both`    | both ends interior to parent, but near at least one boundary                              |
+| `internal_fragment` | both ends well-interior to parent (>2× tolerance from both)                               |
+| `novel_no_match`    | no shared junctions AND no exon overlap with any reference tx                             |
+
+**The poly(A) split between `truncated_3p` and `alt_3prime_end`** runs at the pipeline level (not inside `classify`) because it requires the genome FASTA. The split logic: when an iso would be classified `truncated_3p`, scan its last 50 nt (in transcript orientation; reverse-complemented for `-` strand) for any of the 11 canonical poly(A) signal motifs from `core/utr3.py::POLYA_SIGNALS`. If a motif is found, relabel as `alt_3prime_end`. Otherwise stay `truncated_3p`. For oligo-dT primed long-read cDNA, the vast majority of "shorter than parent annotation" cases land in `alt_3prime_end` because the iso's 3' end *is* the polyadenylation site by construction of the library prep.
 
 **Parent selection.** For each iso, score every candidate reference
 transcript by (a) number of exactly shared splice junctions, then (b)
@@ -234,14 +237,17 @@ with high confidence.** That's propagation.
 
 **`ORFOutcome` values.**
 
-| Outcome             | When                                                                            |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `propagated_intact` | start and stop both covered AND propagated_cds_bp == parent_cds_bp              |
-| `stop_not_observed` | start covered, stop not covered (3' truncation past the propagated stop)         |
-| `disrupted`         | start AND stop covered, but propagated_cds_bp < parent_cds_bp (structural change) |
-| `start_lost`        | start codon position not in any iso exon                                        |
-| `no_parent_cds`     | parent was identified but has no CDS records (e.g. lncRNA, pseudogene)           |
-| `no_parent`         | iso has no usable parent (NOVEL_NO_MATCH)                                       |
+| Outcome              | When                                                                                                                 |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `propagated_intact`  | start and stop both covered AND propagated_cds_bp == parent_cds_bp                                                   |
+| `stop_at_alt_polya`  | start covered, parent's stop not covered, but a canonical poly(A) signal sits in the iso's last 50 nt — alt-polyA upstream of canonical stop (biological APA, not truncation) |
+| `stop_not_observed`  | start covered, parent's stop not covered, AND no poly(A) signal nearby — likely real technical 3' truncation         |
+| `disrupted`          | start AND stop covered, but propagated_cds_bp < parent_cds_bp (structural change)                                    |
+| `start_lost`         | start codon position not in any iso exon                                                                             |
+| `no_parent_cds`      | parent was identified but has no CDS records (e.g. lncRNA, pseudogene)                                               |
+| `no_parent`          | iso has no usable parent (NOVEL_NO_MATCH)                                                                            |
+
+**Same poly(A) split as completeness** (see above): when an iso would be `stop_not_observed`, the pipeline checks for a canonical poly(A) signal in the iso's last 50 nt and reclassifies to `stop_at_alt_polya` if found. The split is mechanistically meaningful: oligo-dT primed reads almost always have a polyA tail (and therefore a polyA signal) at their 3' end by construction, so "iso doesn't reach parent's annotated stop" is almost always APA, not truncation.
 
 **Why this priority order.** `START_LOST` is evaluated first because
 without the start codon there's no propagation regardless of what else
@@ -323,6 +329,7 @@ clipped to `[0, 1]`.
 | outcome             | base |
 | ------------------- | ---- |
 | propagated_intact   | 1.0  |
+| stop_at_alt_polya   | 0.85 |
 | stop_not_observed   | 0.55 |
 | disrupted           | 0.45 |
 | start_lost          | 0.2  |
@@ -334,11 +341,14 @@ clipped to `[0, 1]`.
 | completeness        | factor |
 | ------------------- | ------ |
 | full_length         | 1.0    |
+| alt_3prime_end      | 1.0    |
 | truncated_5p        | 0.9    |
 | truncated_3p        | 0.9    |
 | truncated_both      | 0.65   |
 | internal_fragment   | 0.5    |
 | novel_no_match      | (NONE) |
+
+The `alt_3prime_end` factor is 1.0 (no penalty) because the iso has a clean biological alternative end, not a technical truncation. Likewise, `stop_at_alt_polya` carries the second-highest base score (0.85) because the iso has its own valid stop site via the alt-polyA, just one that's not the parent's annotated stop. Both new categories were added in v1.1 to fix a systematic mislabeling of APA isoforms as truncations.
 
 Categorical thresholds: `>= 0.85` → HIGH, `>= 0.5` → MEDIUM, else LOW.
 
@@ -675,10 +685,16 @@ An iso can be pigeon-valid and still have an ORF problem:
   confidence) and gives up on others (NONE). Use `denovo_orf_found ==
   True` to keep the de-novo-supported orphans and drop the rest.
 
-- **Stop-not-observed (15%) is 3' truncation past stop.** Same shape as
-  start_lost but at the 3' end. Pigeon doesn't filter these; the
-  isoform has a valid structure, the read just doesn't extend far
-  enough downstream to see the stop codon.
+- **Stop-not-observed is mostly NOT technical truncation in oligo-dT data.**
+  For oligo-dT primed cDNA (PacBio Iso-Seq, ONT cDNA), the read's 3' end
+  *is* the polyadenylation site (the polyA tail was the priming
+  substrate). True 3' truncation past the stop codon is mechanistically
+  rare. CRAFT v1.1 splits this category by poly(A) signal evidence:
+  isoforms with a canonical poly(A) signal in their last 50 nt are
+  reclassified `stop_at_alt_polya` (alternative polyadenylation upstream
+  of the canonical stop, biology); isoforms without such a signal stay
+  `stop_not_observed` (rare technical artefact). Earlier versions of CRAFT
+  conflated these.
 
 **The 23% `propagated_intact` rate is the success rate, not a failure
 rate.** It's the fraction of isoforms where CRAFT can hand you a

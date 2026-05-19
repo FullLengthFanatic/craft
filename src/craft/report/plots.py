@@ -5,6 +5,8 @@ from collections import Counter
 import pandas as pd
 import plotly.graph_objects as go
 
+BAR_COLOR = "#5b7a9d"
+
 
 def bar_chart(counts: dict[str, int] | Counter, title: str) -> go.Figure:
     """Horizontal bar chart of category counts, sorted descending."""
@@ -15,7 +17,7 @@ def bar_chart(counts: dict[str, int] | Counter, title: str) -> go.Figure:
     items = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
     categories = [str(k) for k, _ in items]
     values = [int(v) for _, v in items]
-    fig = go.Figure(data=[go.Bar(x=categories, y=values)])
+    fig = go.Figure(data=[go.Bar(x=categories, y=values, marker_color=BAR_COLOR)])
     fig.update_layout(
         title=title,
         margin=dict(l=40, r=20, t=40, b=80),
