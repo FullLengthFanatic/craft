@@ -156,6 +156,71 @@ craft annotate --isoforms iso.filtered.gtf --reference ref.gtf --genome genome.f
     --pfam-hmm Pfam-A.hmm --output-dir step2/
 ```
 
+### With a polyA atlas
+
+```bash
+craft annotate \
+    --isoforms    iso.gtf \
+    --reference   reference.gtf \
+    --genome      genome.fa \
+    --polya-atlas /path/to/polya_sites.bed \
+    --output-dir  out/
+```
+
+A polyA atlas is a BED file of curated polyadenylation sites. When supplied,
+CRAFT compares each isoform's 3' end position against the atlas; matches drive
+the `ALT_3PRIME_END` and `STOP_AT_ALT_POLYA` reclassification. The canonical
+poly(A) motif scan (the v1.1 fallback) still runs for isoforms that don't hit
+the atlas, so you can mix-and-match.
+
+**Expected BED format.** BED 6-column at minimum. Header lines starting with
+`#`, `track`, or `browser` are skipped. Extra columns are tolerated.
+`.bed` and `.bed.gz` both work.
+
+| Column | Required | Meaning |
+|---|---|---|
+| 1: chrom | yes | Chromosome name. Must match the genome FASTA's contig naming. Mismatches produce silent no-hits. |
+| 2: chromStart | yes | 0-based start of the PAS interval. |
+| 3: chromEnd | yes | 0-based exclusive end. PAS sites are usually narrow (1-30 bp); CRAFT matches against the interval's midpoint. |
+| 4: name | recommended | PAS identifier. Propagated to the `polya_db_site_id` output column on a hit. Empty if absent. |
+| 5: score | tolerated | Numeric. Not used by CRAFT for matching; pre-filter your BED if you want stringency. |
+| 6: strand | yes | `+` or `-`. PAS strand must match iso strand for a hit. |
+
+**Matching tolerance.** An iso 3' end position counts as a hit if the PAS
+midpoint is within ±24 nt on the same chromosome+strand. 24 nt is the
+conventional polyA-calling cleavage window.
+
+**Recommended sources** (CRAFT does not auto-download; the choice between atlases
+is a real one and we want you to make it deliberately):
+
+- **PolyASite v3.0** ([polyasite.unibas.ch](https://polyasite.unibas.ch/)) —
+  multi-species (human / mouse / worm), inferred from scRNA-seq via SCINPAS.
+  Ships at three stringency levels (motif presence at 20%, 62%, 87%). The
+  62% level is a balanced default; 87% is for high-confidence-only.
+- **PolyA_DB v4** ([exon.apps.wistar.org/PolyA_DB/v4/](https://exon.apps.wistar.org/PolyA_DB/v4/)) —
+  human + mouse, derived from 3'-seq AND long-read sequencing. Provides
+  "Main" (curated) and "Max" (less stringent) collections. Roughly 42%
+  overlap with PolyASite v2.0 on human, so the two atlases capture
+  substantially non-overlapping sites; combining them is reasonable.
+
+You can also use any user-supplied BED as long as it follows the format above.
+
+**What ends up in the output:**
+
+- `polya_evidence_source`: one of `polya_db`, `canonical_motif`, `none`.
+- `polya_db_site_id`: the PAS name from the BED's column 4 when matched by
+  atlas (empty otherwise).
+
+**Filter recipe** for "show me only APA isoforms supported by the atlas":
+
+```python
+df = pd.read_csv("out/per_isoform.tsv", sep="\t")
+db_supported_apa = df[
+    (df["completeness"] == "alt_3prime_end")
+    & (df["polya_evidence_source"] == "polya_db")
+]
+```
+
 v1.5 will detect a pressed Pfam database (`hmmpress Pfam-A.hmm`) and switch
 to `hmmscan` for a substantial speedup.
 

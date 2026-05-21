@@ -247,7 +247,14 @@ with high confidence.** That's propagation.
 | `no_parent_cds`      | parent was identified but has no CDS records (e.g. lncRNA, pseudogene)                                               |
 | `no_parent`          | iso has no usable parent (NOVEL_NO_MATCH)                                                                            |
 
-**Same poly(A) split as completeness** (see above): when an iso would be `stop_not_observed`, the pipeline checks for a canonical poly(A) signal in the iso's last 50 nt and reclassifies to `stop_at_alt_polya` if found. The split is mechanistically meaningful: oligo-dT primed reads almost always have a polyA tail (and therefore a polyA signal) at their 3' end by construction, so "iso doesn't reach parent's annotated stop" is almost always APA, not truncation.
+**Same poly(A) split as completeness** (see above): when an iso would be `stop_not_observed`, the pipeline checks for poly(A) evidence near the iso's 3' end and reclassifies to `stop_at_alt_polya` if found. The split is mechanistically meaningful: oligo-dT primed reads almost always have a polyA tail (and therefore a polyA signal) at their 3' end by construction, so "iso doesn't reach parent's annotated stop" is almost always APA, not truncation.
+
+**Two evidence sources** (added in v1.2):
+
+1. **Atlas match (primary when `--polya-atlas` is provided).** A user-supplied BED file of curated polyadenylation sites (PolyASite v3.0, PolyA_DB v4, or any 6+ column BED) is loaded and indexed by chromosome+strand. The iso's 3' end position is compared against the atlas: a PAS midpoint within ±24 nt on the same chromosome+strand counts as a hit. When a match is found, the iso is reclassified and `polya_evidence_source` is set to `polya_db` with the matched PAS name in `polya_db_site_id`.
+2. **Canonical motif scan (fallback).** When the atlas is not provided OR the iso's 3' end gets no atlas hit, the v1.1 motif scanner runs: the last 50 nt of the iso's transcript-orientation 3' end is searched for the 11 canonical poly(A) signal motifs (`AATAAA` and known variants). A hit sets `polya_evidence_source = canonical_motif`. No hit → `none`, and the original `TRUNCATED_3P` / `STOP_NOT_OBSERVED` label stands.
+
+Both pathways feed the same boolean ("did we find evidence?") into the reclassification step. The `polya_evidence_source` column lets downstream filters distinguish DB-supported APA from motif-only APA when the user cares.
 
 **Why this priority order.** `START_LOST` is evaluated first because
 without the start codon there's no propagation regardless of what else
@@ -539,7 +546,7 @@ override.
 
 CRAFT writes four files to `output_dir/`:
 
-### `per_isoform.tsv` (one row per isoform, 32 columns; 37 with `--pfam-hmm`)
+### `per_isoform.tsv` (one row per isoform, 34 columns; 39 with `--pfam-hmm`)
 
 The full annotation table. List-valued columns (CDS intervals, Pfam
 domain lists) are JSON-encoded so the TSV is grep-friendly while still
@@ -579,6 +586,8 @@ being round-trippable.
 | `utr3_length_delta_pct`         | utr3                  | float     | percent change relative to parent                                        |
 | `polya_signal_motif`            | utr3                  | string    | strongest poly(A) motif found in the UTR; "" if none                     |
 | `polya_signal_distance_nt`      | utr3                  | float     | nt from motif end to UTR 3' end                                          |
+| `polya_evidence_source`         | polya_atlas + utr3    | string    | `polya_db` (atlas hit), `canonical_motif` (motif fallback), or `none`    |
+| `polya_db_site_id`              | polya_atlas           | string    | PAS name from the atlas BED's column 4 when matched; empty otherwise     |
 | `iso_pfam_domains` *            | pfam                  | list[str] | Pfam HMM names hitting the iso's protein                                 |
 | `parent_pfam_domains` *         | pfam                  | list[str] | Pfam HMM names hitting the parent's protein                              |
 | `pfam_preserved` *              | pfam                  | list[str] | iso_domains ∩ parent_domains                                             |

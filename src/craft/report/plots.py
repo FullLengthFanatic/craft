@@ -20,9 +20,9 @@ def bar_chart(counts: dict[str, int] | Counter, title: str) -> go.Figure:
     fig = go.Figure(data=[go.Bar(x=categories, y=values, marker_color=BAR_COLOR)])
     fig.update_layout(
         title=title,
-        margin=dict(l=40, r=20, t=40, b=80),
-        height=320,
-        xaxis_tickangle=-30,
+        margin=dict(l=40, r=20, t=40, b=140),
+        height=360,
+        xaxis_tickangle=-25,
     )
     return fig
 

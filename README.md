@@ -46,6 +46,11 @@ Optional flags:
 - `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`.
 - `--pfam-hmm Pfam-A.hmm` enables Pfam domain preservation analysis (slow with
   full Pfam; v1.5 will switch to `hmmscan` against a pressed database).
+- `--polya-atlas sites.bed` provides curated polyA sites (PolyASite v3.0,
+  PolyA_DB v4, or any user-supplied BED 6+). When supplied, atlas hits drive
+  the ALT_3PRIME_END / STOP_AT_ALT_POLYA reclassification with the canonical
+  poly(A) motif scan as fallback. See [`docs/user_guide.md`](docs/user_guide.md)
+  for the BED format spec and recommended sources.
 
 Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~1 minute.
 Full-genome scale (~600k iso rows) is roughly 10-15 minutes without `--pfam-hmm`.

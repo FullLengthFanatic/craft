@@ -17,6 +17,7 @@ from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.pfam import scan as pfam_scan
+from craft.core.polya_atlas import load_atlas, match_iso_end
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
@@ -75,6 +76,8 @@ _OUTPUT_COLUMNS = [
     "utr3_length_delta_pct",
     "polya_signal_motif",
     "polya_signal_distance_nt",
+    "polya_evidence_source",
+    "polya_db_site_id",
     "iso_pfam_domains",
     "parent_pfam_domains",
     "pfam_preserved",
@@ -116,36 +119,82 @@ def _confidence_for(
     return category.value, score_value
 
 
+def _iso_3prime_pos(exons: pd.DataFrame, strand: str) -> tuple[str, int]:
+    """Genomic position of the iso's 3' end (transcript orientation)."""
+    sorted_exons = exons.sort_values("Start").reset_index(drop=True)
+    chrom = str(sorted_exons.iloc[0]["Chromosome"])
+    if strand == "+":
+        pos = int(sorted_exons.iloc[-1]["End"]) - 1
+    elif strand == "-":
+        pos = int(sorted_exons.iloc[0]["Start"])
+    else:
+        raise ValueError(f"Unsupported strand: {strand!r}")
+    return chrom, pos
+
+
 def _compute_polya_evidence(
-    isoforms: pr.PyRanges, genome_path: Path
-) -> dict[str, bool]:
-    """For every iso transcript_id, True iff a canonical poly(A) signal sits
-    in the last 50 nt of its 3' end (transcript orientation)."""
+    isoforms: pr.PyRanges,
+    genome_path: Path,
+    polya_atlas_path: Path | None = None,
+) -> dict[str, dict]:
+    """For every iso transcript_id, return poly(A) evidence:
+    {found: bool, source: "polya_db"|"canonical_motif"|"none", pas_id: str}.
+
+    Atlas matching runs first when a BED path is provided; misses (and the
+    no-atlas case) fall back to the canonical motif scan in the iso's last 50 nt.
+    """
+    atlas = load_atlas(polya_atlas_path) if polya_atlas_path is not None else None
     iso_df = isoforms.df
     iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
     iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
-    evidence: dict[str, bool] = {}
+    evidence: dict[str, dict] = {}
     with pysam.FastaFile(str(genome_path)) as genome:
         for tx_id, exons in iso_exons_by_tx.items():
-            sig = polya_near_3prime_end(exons, str(iso_strand[tx_id]), genome)
-            evidence[str(tx_id)] = bool(sig["found"])
+            strand = str(iso_strand[tx_id])
+
+            if atlas is not None and len(atlas) > 0:
+                chrom, iso_3p = _iso_3prime_pos(exons, strand)
+                hit = match_iso_end(iso_3p, chrom, strand, atlas)
+                if hit["matched"]:
+                    evidence[str(tx_id)] = {
+                        "found": True,
+                        "source": "polya_db",
+                        "pas_id": str(hit["pas_id"]),
+                    }
+                    continue
+
+            sig = polya_near_3prime_end(exons, strand, genome)
+            if sig["found"]:
+                evidence[str(tx_id)] = {
+                    "found": True,
+                    "source": "canonical_motif",
+                    "pas_id": "",
+                }
+            else:
+                evidence[str(tx_id)] = {
+                    "found": False,
+                    "source": "none",
+                    "pas_id": "",
+                }
     return evidence
 
 
 def _reclassify_with_polya(
     classified: pr.PyRanges,
     propagated: pd.DataFrame,
-    polya_evidence: dict[str, bool],
+    polya_evidence: dict[str, dict],
 ) -> tuple[pr.PyRanges, pd.DataFrame]:
-    """Use poly(A) signal evidence to relabel APA isoforms previously called
-    truncations: TRUNCATED_3P -> ALT_3PRIME_END, STOP_NOT_OBSERVED -> STOP_AT_ALT_POLYA."""
+    """Use poly(A) evidence (atlas hit OR canonical motif) to relabel
+    TRUNCATED_3P -> ALT_3PRIME_END and STOP_NOT_OBSERVED -> STOP_AT_ALT_POLYA."""
+
+    def _found(tx: str) -> bool:
+        return bool(polya_evidence.get(tx, {}).get("found", False))
 
     cls_df = classified.df.copy()
 
     def _new_completeness(row: pd.Series) -> str:
-        if (
-            row["completeness"] == Completeness.TRUNCATED_3P.value
-            and polya_evidence.get(str(row["transcript_id"]), False)
+        if row["completeness"] == Completeness.TRUNCATED_3P.value and _found(
+            str(row["transcript_id"])
         ):
             return Completeness.ALT_3PRIME_END.value
         return str(row["completeness"])
@@ -156,15 +205,33 @@ def _reclassify_with_polya(
     propagated = propagated.copy()
 
     def _new_outcome(row: pd.Series) -> str:
-        if (
-            row["orf_outcome"] == ORFOutcome.STOP_NOT_OBSERVED.value
-            and polya_evidence.get(str(row["transcript_id"]), False)
+        if row["orf_outcome"] == ORFOutcome.STOP_NOT_OBSERVED.value and _found(
+            str(row["transcript_id"])
         ):
             return ORFOutcome.STOP_AT_ALT_POLYA.value
         return str(row["orf_outcome"])
 
     propagated["orf_outcome"] = propagated.apply(_new_outcome, axis=1)
     return classified, propagated
+
+
+def _polya_evidence_columns(polya_evidence: dict[str, dict]) -> pd.DataFrame:
+    """Build a DataFrame of (transcript_id, polya_evidence_source, polya_db_site_id)
+    rows ready to merge into the per-isoform output."""
+    if not polya_evidence:
+        return pd.DataFrame(
+            columns=["transcript_id", "polya_evidence_source", "polya_db_site_id"]
+        )
+    return pd.DataFrame(
+        [
+            {
+                "transcript_id": tx,
+                "polya_evidence_source": info.get("source", "none"),
+                "polya_db_site_id": info.get("pas_id", ""),
+            }
+            for tx, info in polya_evidence.items()
+        ]
+    )
 
 
 def _empty_denovo() -> pd.DataFrame:
@@ -188,6 +255,7 @@ def run_annotate(
     genome_path: Path | None = None,
     counts_path: Path | None = None,
     pfam_hmm_path: Path | None = None,
+    polya_atlas_path: Path | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -212,8 +280,11 @@ def run_annotate(
     classified = classify(isoforms, _exon_only_reference(reference))
     propagated = propagate(classified, reference)
 
+    polya_evidence: dict[str, dict] = {}
     if genome_path is not None:
-        polya_evidence = _compute_polya_evidence(isoforms, genome_path)
+        polya_evidence = _compute_polya_evidence(
+            isoforms, genome_path, polya_atlas_path=polya_atlas_path
+        )
         classified, propagated = _reclassify_with_polya(
             classified, propagated, polya_evidence
         )
@@ -292,6 +363,16 @@ def run_annotate(
         )
     merged["parent_gene_id"] = merged["parent_tx_id"].map(gene_id_map).fillna("")
     merged["parent_gene_name"] = merged["parent_tx_id"].map(gene_name_map).fillna("")
+
+    evidence_df = _polya_evidence_columns(polya_evidence)
+    if not evidence_df.empty:
+        merged = merged.merge(evidence_df, on="transcript_id", how="left")
+    if "polya_evidence_source" not in merged.columns:
+        merged["polya_evidence_source"] = "none"
+    if "polya_db_site_id" not in merged.columns:
+        merged["polya_db_site_id"] = ""
+    merged["polya_evidence_source"] = merged["polya_evidence_source"].fillna("none")
+    merged["polya_db_site_id"] = merged["polya_db_site_id"].fillna("")
 
     if pfam_hmm_path is not None and genome_path is not None:
         pfam_df = pfam_scan(merged, reference, pfam_hmm_path, genome_path)

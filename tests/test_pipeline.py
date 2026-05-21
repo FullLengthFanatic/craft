@@ -170,6 +170,115 @@ def test_pipeline_creates_output_directory(pipeline_inputs: dict[str, Path]) -> 
     assert (nested / "per_isoform.tsv").exists()
 
 
+def test_pipeline_polya_atlas_takes_precedence_over_motif(tmp_path: Path) -> None:
+    """When --polya-atlas hits, polya_evidence_source should be 'polya_db' and
+    polya_db_site_id should carry the BED's name column."""
+    import pysam as _pysam
+
+    # chr1: 600 bp, no AATAAA motif anywhere (so any 'found' must come from the atlas).
+    chr1 = ("N" * 100) + ("G" * 100) + ("N" * 100) + ("G" * 100) + ("N" * 100) + ("G" * 100)
+    assert len(chr1) == 600
+    fasta_path = tmp_path / "genome.fa"
+    fasta_path.write_text(f">chr1\n{chr1}\n")
+    _pysam.faidx(str(fasta_path))
+
+    # Reference: parent with 3 exons, last exon to 600.
+    ref_rows = [
+        'chr1\tCRAFT\tgene\t101\t600\t.\t+\t.\tgene_id "g1";',
+        'chr1\tCRAFT\ttranscript\t101\t600\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t501\t600\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t151\t200\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t301\t400\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t501\t530\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+    ]
+    ref_path = tmp_path / "reference.gtf"
+    ref_path.write_text("\n".join(ref_rows) + "\n")
+
+    # Iso: 3'-truncated at GTF 549 (PyRanges End=549, iso 3' end=548). Parent ends
+    # at GTF 600 (PyRanges 600); 3'-complete threshold is iso.End >= 550, so 549
+    # is TRUNCATED_3P. Iso still covers the parent's stop codon (PyRanges 529).
+    iso_rows = [
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t501\t549\t.\t+\t.\ttranscript_id "t_apa";',
+    ]
+    iso_path = tmp_path / "isoforms.gtf"
+    iso_path.write_text("\n".join(iso_rows) + "\n")
+
+    # PAS at chr1:540-555 on +; midpoint 547, iso 3' end 548, distance 1 -> match.
+    bed_path = tmp_path / "polya.bed"
+    bed_path.write_text("chr1\t540\t555\tPAS_TEST_ID\t100\t+\n")
+
+    result = run_annotate(
+        isoforms_path=iso_path,
+        reference_path=ref_path,
+        output_dir=tmp_path / "out",
+        genome_path=fasta_path,
+        polya_atlas_path=bed_path,
+    )
+    row = result[result["transcript_id"] == "t_apa"].iloc[0]
+    assert row["completeness"] == "alt_3prime_end"
+    assert row["orf_outcome"] == "propagated_intact"
+    assert row["polya_evidence_source"] == "polya_db"
+    assert row["polya_db_site_id"] == "PAS_TEST_ID"
+
+
+def test_pipeline_polya_atlas_miss_falls_back_to_motif(tmp_path: Path) -> None:
+    """When the atlas is provided but the iso 3' end has no PAS hit, the motif
+    fallback runs; polya_evidence_source should be either 'canonical_motif' or
+    'none' depending on whether a motif is found."""
+    import pysam as _pysam
+
+    # chr1 layout matches test_pipeline_reclassifies_alt_polya_isoforms (with AATAAA
+    # at positions 565-570 inside iso's last 50 nt window).
+    exon3 = "C" * 10 + "AATAAA" + "C" * 49 + "AATAAA" + "C" * 129
+    chr1 = ("N" * 100) + ("A" * 100) + ("N" * 100) + ("A" * 100) + ("N" * 100) + exon3
+    assert len(chr1) == 700
+    fasta_path = tmp_path / "genome.fa"
+    fasta_path.write_text(f">chr1\n{chr1}\n")
+    _pysam.faidx(str(fasta_path))
+
+    ref_rows = [
+        'chr1\tCRAFT\tgene\t101\t700\t.\t+\t.\tgene_id "g1";',
+        'chr1\tCRAFT\ttranscript\t101\t700\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\texon\t501\t700\t.\t+\t.\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t151\t200\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t301\t400\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+        'chr1\tCRAFT\tCDS\t501\t530\t.\t+\t0\tgene_id "g1"; transcript_id "t_parent";',
+    ]
+    ref_path = tmp_path / "reference.gtf"
+    ref_path.write_text("\n".join(ref_rows) + "\n")
+
+    iso_rows = [
+        'chr1\tCRAFT\texon\t101\t200\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t301\t400\t.\t+\t.\ttranscript_id "t_apa";',
+        'chr1\tCRAFT\texon\t501\t580\t.\t+\t.\ttranscript_id "t_apa";',
+    ]
+    iso_path = tmp_path / "isoforms.gtf"
+    iso_path.write_text("\n".join(iso_rows) + "\n")
+
+    # Atlas BED has a PAS far from the iso's 3' end (position 200, not 580).
+    bed_path = tmp_path / "polya.bed"
+    bed_path.write_text("chr1\t190\t210\tFAR_PAS\t100\t+\n")
+
+    result = run_annotate(
+        isoforms_path=iso_path,
+        reference_path=ref_path,
+        output_dir=tmp_path / "out",
+        genome_path=fasta_path,
+        polya_atlas_path=bed_path,
+    )
+    row = result[result["transcript_id"] == "t_apa"].iloc[0]
+    # Atlas misses, motif (AATAAA at 565-570) hits -> source should be canonical_motif.
+    assert row["polya_evidence_source"] == "canonical_motif"
+    assert row["polya_db_site_id"] == ""
+    assert row["completeness"] == "alt_3prime_end"
+
+
 def test_pipeline_reclassifies_alt_polya_isoforms(tmp_path: Path) -> None:
     """When the iso has a canonical poly(A) signal in its last 50 bp, the
     pipeline should reclassify TRUNCATED_3P -> ALT_3PRIME_END and

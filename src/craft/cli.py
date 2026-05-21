@@ -46,6 +46,15 @@ def cli() -> None:
     "Pfam domains and compared to the parent transcript's domain set.",
 )
 @click.option(
+    "--polya-atlas",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional BED file of polyadenylation sites (e.g. PolyASite v3.0 or "
+    "PolyA_DB v4). When provided, atlas matches drive ALT_3PRIME_END / "
+    "STOP_AT_ALT_POLYA reclassification; the canonical poly(A) motif scan stays "
+    "as the fallback. See docs/user_guide.md for the expected BED format.",
+)
+@click.option(
     "--output-dir",
     type=click.Path(file_okay=False, path_type=Path),
     required=True,
@@ -57,6 +66,7 @@ def annotate(
     genome: Path,
     counts: Path | None,
     pfam_hmm: Path | None,
+    polya_atlas: Path | None,
     output_dir: Path,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
@@ -67,5 +77,6 @@ def annotate(
         genome_path=genome,
         counts_path=counts,
         pfam_hmm_path=pfam_hmm,
+        polya_atlas_path=polya_atlas,
     )
     click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")
