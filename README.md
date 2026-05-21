@@ -49,8 +49,11 @@ Optional flags:
 - `--polya-atlas sites.bed` provides curated polyA sites (PolyASite v3.0,
   PolyA_DB v4, or any user-supplied BED 6+). When supplied, atlas hits drive
   the ALT_3PRIME_END / STOP_AT_ALT_POLYA reclassification with the canonical
-  poly(A) motif scan as fallback. See [`docs/user_guide.md`](docs/user_guide.md)
-  for the BED format spec and recommended sources.
+  poly(A) motif scan as fallback. **Pre-filter the atlas by usage score**
+  (`awk '$5 >= 0.01'` for PolyASite v3.0) before passing — the unfiltered
+  atlas is too dense (~one PAS every 200 bp) and produces uninformative
+  98% match rates. See [`docs/user_guide.md`](docs/user_guide.md) for the
+  BED format spec, recommended sources, and the full stringency story.
 
 Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~1 minute.
 Full-genome scale (~600k iso rows) is roughly 10-15 minutes without `--pfam-hmm`.

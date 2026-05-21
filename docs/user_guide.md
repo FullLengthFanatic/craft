@@ -205,40 +205,48 @@ is a real one and we want you to make it deliberately):
 
 You can also use any user-supplied BED as long as it follows the format above.
 
-**Pre-filter the BED for stringency before passing it to CRAFT.** This matters
-more than it sounds. The unfiltered PolyASite v3.0 human atlas ships ~18M
-sites globally (and ~257k on chr22 alone), which is roughly one PAS every
-200 bp across the chromosome. With CRAFT's default ±24 nt match tolerance,
-almost any iso 3' end ends up with an atlas hit (in our chr22 smoke test,
-98% of isoforms matched). That's permissive enough that downstream
-"polya_db-supported APA" filters lose their teeth.
+**Strongly recommended: pre-filter the BED by usage score before passing it
+to CRAFT.** The unfiltered PolyASite v3.0 human atlas ships ~18M sites
+globally (~257k on chr22 alone) — roughly one PAS every 200 bp. With the
+default ±24 nt match tolerance, almost any iso 3' end finds *something*.
+In our chr22 smoke test, 98% of isoforms got an atlas hit with the
+unfiltered atlas, which makes the `polya_db_supported` flag effectively
+meaningless downstream.
 
-Three reasonable mitigations:
+**Default recipe** for PolyASite v3.0 — drop any site with relative usage
+frequency below 1% (column 5):
 
-1. **Use the published stringency-filtered subset.** PolyASite v3.0 ships
-   three motif-presence cuts (20%, 62%, 87%). The 62% level is a balanced
-   default; 87% gives high-confidence-only.
-2. **Pre-filter by the score column.** PolyASite's column 5 is the relative
-   usage frequency. A `0.01` cut drops ~half the rows:
+```bash
+zcat polyasite_v3.bed.gz | awk '$5 >= 0.01' > polyasite_v3.filtered.bed
+```
 
-   ```bash
-   zcat polyasite_v3.bed.gz | awk '$5 >= 0.01' > polyasite_v3.filtered.bed
-   ```
-3. **Tighten the match tolerance.** The CLI doesn't yet expose it, but the
-   Python API does (`match_iso_end(..., tolerance=10)`). Tighter tolerance
-   = fewer hits = stricter APA calls.
+This cuts the chr22 atlas from 257k to 35k rows (7.4×), drops the
+atlas-supported fraction from 98% to a more discriminating 88%, and brings
+runtime from ~10 minutes to ~3 minutes on chr22. The remaining ~12% of
+isoforms now split between `canonical_motif` evidence (~2%) and `none`
+(~10%), which is the actually-interesting tail you'd want to investigate
+manually.
 
-If you don't pre-filter, the results are still correct; they're just
-biologically loose. Most iso 3' ends DO sit at PolyASite-recorded
-locations, even at low-confidence sites, so "polya_db_supported" doesn't
-buy much beyond "the iso isn't ending in genomic dark matter".
+The HIGH-confidence ORF fraction is essentially identical to the
+unfiltered atlas (32.5% vs 33.7%), so the score cut doesn't sacrifice
+biological coverage — the high-usage PolyASite sites drive almost all of
+the confidence boost. Stringency filtering is a free win.
+
+**Other knobs** if you want even stricter:
+
+- **PolyASite's published stringency cuts.** v3.0 ships three motif-presence
+  thresholds (20%, 62%, 87%). The 62% subset is a balanced default if you
+  prefer that to a score cut; 87% is high-confidence-only.
+- **Tighten the match tolerance.** The CLI doesn't expose it yet but the
+  Python API does (`match_iso_end(..., tolerance=10)`). Tighter tolerance
+  = fewer hits = stricter APA calls.
 
 **Performance.** CRAFT's current `match_iso_end` does a linear filter per
 iso. With the unfiltered chr22 atlas (257k sites) and ~13k isoforms,
 runtime jumps from ~1 minute (motif-only) to ~10 minutes. Full-genome
-unfiltered scales to ~4-5 hours. v1.5 should switch to `pyranges.nearest`
-or a sorted-position bisect for O(log n) lookups. Until then: pre-filter
-your BED for stringency *and* speed.
+unfiltered scales to ~4-5 hours, which is why pre-filtering matters for
+production use. v1.5 should switch to `pyranges.nearest` or a
+sorted-position bisect for O(log n) lookups.
 
 **What ends up in the output:**
 
