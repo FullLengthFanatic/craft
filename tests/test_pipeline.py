@@ -427,6 +427,34 @@ def test_pipeline_pfam_columns_populate_when_hmm_provided(
     _ = _rc
 
 
+def test_pipeline_skips_isoforms_on_contigs_missing_from_fasta(
+    pipeline_inputs: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Isoforms on contigs absent from the genome FASTA must be dropped up front.
+
+    PacBio collapse outputs reference random/alt contigs that the
+    primary_assembly FASTA omits; without this filter any FASTA fetch on those
+    isoforms aborts the whole run.
+    """
+    rows = pipeline_inputs["isoforms"].read_text().splitlines()
+    rows.append(
+        'chr_missing\tFLAIR\texon\t1\t200\t.\t+\t.\ttranscript_id "t_orphan";'
+    )
+    pipeline_inputs["isoforms"].write_text("\n".join(rows) + "\n")
+
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+    )
+
+    assert set(result["transcript_id"]) == {"t_intact", "t_novel"}
+    stderr = capsys.readouterr().err
+    assert "Skipping 1 isoforms" in stderr
+    assert "chr_missing" in stderr
+
+
 def test_pipeline_cli_smoke(pipeline_inputs: dict[str, Path]) -> None:
     """Smoke-test the CLI entry point with click's testing harness."""
     from click.testing import CliRunner

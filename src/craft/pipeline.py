@@ -5,6 +5,7 @@ point and emits per-isoform TSV and JSON outputs to a directory.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -92,6 +93,45 @@ _DENOVO_TRIGGER_OUTCOMES = frozenset(
         ORFOutcome.START_LOST.value,
     }
 )
+
+
+def _filter_isoforms_by_genome_contigs(
+    isoforms: pr.PyRanges, genome_path: Path
+) -> pr.PyRanges:
+    """Drop isoforms whose chromosome is absent from the genome FASTA.
+
+    PacBio collapse outputs frequently reference random/alt contigs
+    (``chr1_KI270706v1_random``, ``chrUn_*``, etc.) that the GRCh38
+    primary_assembly FASTA omits. Those isoforms have no parent annotation
+    in standard GENCODE anyway (NOVEL_NO_MATCH downstream) and any FASTA
+    fetch on them raises ``KeyError`` mid-run. Drop them up front with a
+    one-line warning to stderr.
+    """
+    with pysam.FastaFile(str(genome_path)) as genome:
+        available = set(genome.references)
+    iso_df = isoforms.df
+    iso_contigs = set(iso_df["Chromosome"].astype(str).unique())
+    missing = iso_contigs - available
+    if not missing:
+        return isoforms
+    mask = ~iso_df["Chromosome"].astype(str).isin(missing)
+    keep = iso_df[mask].copy()
+    dropped_tx = (
+        iso_df.loc[~mask, "transcript_id"].nunique()
+        if "transcript_id" in iso_df.columns
+        else 0
+    )
+    sample = sorted(missing)[:5]
+    suffix = ", ..." if len(missing) > 5 else ""
+    print(
+        f"[craft] Skipping {dropped_tx} isoforms on {len(missing)} contigs "
+        f"not in the genome FASTA: {sample}{suffix}",
+        file=sys.stderr,
+    )
+    if keep.empty:
+        return pr.PyRanges()
+    keep["Strand"] = keep["Strand"].astype(str)
+    return pr.PyRanges(keep)
 
 
 def _exon_only_reference(reference: pr.PyRanges) -> pr.PyRanges:
@@ -279,6 +319,8 @@ def run_annotate(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     isoforms = load_isoforms(isoforms_path)
+    if genome_path is not None and len(isoforms) > 0:
+        isoforms = _filter_isoforms_by_genome_contigs(isoforms, genome_path)
     reference = load_reference(reference_path)
 
     classified = classify(isoforms, _exon_only_reference(reference))
