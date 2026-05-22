@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pyranges as pr
 
-from craft.core.polya_atlas import load_atlas, match_iso_end
+from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
+
+
+def _index(bed_path):
+    return build_atlas_index(load_atlas(bed_path))
 
 _BED = "\n".join(
     [
@@ -54,9 +58,9 @@ def test_load_atlas_handles_empty_or_invalid(tmp_path: Path) -> None:
 def test_match_iso_end_plus_strand_hit(tmp_path: Path) -> None:
     p = tmp_path / "atlas.bed"
     p.write_text(_BED)
-    atlas = load_atlas(p)
+    idx = _index(p)
     # PAS at chr1:100-110, midpoint=105. iso 3' end at 100 -> distance 5, within tol.
-    result = match_iso_end(100, "chr1", "+", atlas, tolerance=24)
+    result = match_iso_end(100, "chr1", "+", idx, tolerance=24)
     assert result["matched"] is True
     assert result["pas_id"] == "pas_a"
     assert result["distance_nt"] == 5  # midpoint - iso = 105 - 100
@@ -65,9 +69,9 @@ def test_match_iso_end_plus_strand_hit(tmp_path: Path) -> None:
 def test_match_iso_end_minus_strand_hit(tmp_path: Path) -> None:
     p = tmp_path / "atlas.bed"
     p.write_text(_BED)
-    atlas = load_atlas(p)
+    idx = _index(p)
     # PAS at chr1:800-810 on -, midpoint=805. iso 3' end at 810.
-    result = match_iso_end(810, "chr1", "-", atlas, tolerance=24)
+    result = match_iso_end(810, "chr1", "-", idx, tolerance=24)
     assert result["matched"] is True
     assert result["pas_id"] == "pas_c"
 
@@ -75,10 +79,10 @@ def test_match_iso_end_minus_strand_hit(tmp_path: Path) -> None:
 def test_match_iso_end_outside_tolerance(tmp_path: Path) -> None:
     p = tmp_path / "atlas.bed"
     p.write_text(_BED)
-    atlas = load_atlas(p)
+    idx = _index(p)
     # PAS midpoints at 105, 505, 805, 205. iso at 200 on + closest is 205 (dist 5)
     # but on chr2 not chr1.
-    result = match_iso_end(200, "chr1", "+", atlas, tolerance=24)
+    result = match_iso_end(200, "chr1", "+", idx, tolerance=24)
     assert result["matched"] is False
     assert result["pas_id"] == ""
     assert result["distance_nt"] == -1
@@ -87,21 +91,36 @@ def test_match_iso_end_outside_tolerance(tmp_path: Path) -> None:
 def test_match_iso_end_wrong_chromosome(tmp_path: Path) -> None:
     p = tmp_path / "atlas.bed"
     p.write_text(_BED)
-    atlas = load_atlas(p)
-    result = match_iso_end(105, "chr_other", "+", atlas, tolerance=24)
+    idx = _index(p)
+    result = match_iso_end(105, "chr_other", "+", idx, tolerance=24)
     assert result["matched"] is False
 
 
 def test_match_iso_end_wrong_strand(tmp_path: Path) -> None:
     p = tmp_path / "atlas.bed"
     p.write_text(_BED)
-    atlas = load_atlas(p)
+    idx = _index(p)
     # pas_a is on +; querying - at the same position should miss.
-    result = match_iso_end(105, "chr1", "-", atlas, tolerance=24)
+    result = match_iso_end(105, "chr1", "-", idx, tolerance=24)
     assert result["matched"] is False
 
 
 def test_match_iso_end_empty_atlas() -> None:
-    empty_atlas = pr.PyRanges()
-    result = match_iso_end(100, "chr1", "+", empty_atlas)
+    empty_idx = build_atlas_index(pr.PyRanges())
+    result = match_iso_end(100, "chr1", "+", empty_idx)
     assert result["matched"] is False
+
+
+def test_build_atlas_index_shape_and_sort(tmp_path: Path) -> None:
+    """The index should group by (chrom, strand) and keep midpoints ascending."""
+    p = tmp_path / "atlas.bed"
+    # Intentionally unsorted in the input file; the index must sort them.
+    p.write_text(
+        "chr1\t500\t510\tlate\t10\t+\n"
+        "chr1\t100\t110\tearly\t10\t+\n"
+        "chr1\t300\t310\tmid\t10\t+\n"
+    )
+    idx = build_atlas_index(load_atlas(p))
+    midpoints, names = idx[("chr1", "+")]
+    assert list(midpoints) == [105, 305, 505]
+    assert list(names) == ["early", "mid", "late"]

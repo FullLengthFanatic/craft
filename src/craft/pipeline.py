@@ -17,7 +17,7 @@ from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.pfam import scan as pfam_scan
-from craft.core.polya_atlas import load_atlas, match_iso_end
+from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
@@ -143,7 +143,11 @@ def _compute_polya_evidence(
     Atlas matching runs first when a BED path is provided; misses (and the
     no-atlas case) fall back to the canonical motif scan in the iso's last 50 nt.
     """
-    atlas = load_atlas(polya_atlas_path) if polya_atlas_path is not None else None
+    atlas_index = (
+        build_atlas_index(load_atlas(polya_atlas_path))
+        if polya_atlas_path is not None
+        else {}
+    )
     iso_df = isoforms.df
     iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
     iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
@@ -152,9 +156,9 @@ def _compute_polya_evidence(
         for tx_id, exons in iso_exons_by_tx.items():
             strand = str(iso_strand[tx_id])
 
-            if atlas is not None and len(atlas) > 0:
+            if atlas_index:
                 chrom, iso_3p = _iso_3prime_pos(exons, strand)
-                hit = match_iso_end(iso_3p, chrom, strand, atlas)
+                hit = match_iso_end(iso_3p, chrom, strand, atlas_index)
                 if hit["matched"]:
                     evidence[str(tx_id)] = {
                         "found": True,

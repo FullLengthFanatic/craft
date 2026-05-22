@@ -241,12 +241,12 @@ the confidence boost. Stringency filtering is a free win.
   Python API does (`match_iso_end(..., tolerance=10)`). Tighter tolerance
   = fewer hits = stricter APA calls.
 
-**Performance.** CRAFT's current `match_iso_end` does a linear filter per
-iso. With the unfiltered chr22 atlas (257k sites) and ~13k isoforms,
-runtime jumps from ~1 minute (motif-only) to ~10 minutes. Full-genome
-unfiltered scales to ~4-5 hours, which is why pre-filtering matters for
-production use. v1.5 should switch to `pyranges.nearest` or a
-sorted-position bisect for O(log n) lookups.
+**Performance.** As of v1.3, `match_iso_end` uses a per-(chrom, strand)
+sorted-midpoint index plus `numpy.searchsorted` for O(log n) lookups.
+chr22 filtered: ~1:25 (was ~3 min pre-fix). Most full-genome runtime is
+now in the core pipeline (completeness joins, propagation, FASTA reads)
+rather than atlas matching. Pre-filtering still matters more for
+biological stringency than for speed.
 
 **What ends up in the output:**
 

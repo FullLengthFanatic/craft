@@ -20,6 +20,7 @@ Expected file format: BED 6-column at minimum. Lines starting with ``#``,
 import gzip
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyranges as pr
 
@@ -81,14 +82,48 @@ def load_atlas(bed_path: Path) -> pr.PyRanges:
     return pr.PyRanges(df)
 
 
+def build_atlas_index(
+    atlas: pr.PyRanges,
+) -> dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]:
+    """Pre-compute sorted PAS midpoints per (chrom, strand) for O(log n) lookup.
+
+    Build this once after :func:`load_atlas` and pass the result to
+    :func:`match_iso_end` for every isoform. Replaces the O(n) per-isoform
+    linear scan of the raw PyRanges with a binary search.
+
+    Args:
+        atlas: PyRanges from :func:`load_atlas`.
+
+    Returns:
+        Dict ``{(chrom, strand): (sorted_midpoints, names)}`` where
+        ``sorted_midpoints`` is an ``int64`` numpy array of PAS interval
+        midpoints in ascending order, and ``names`` is an object array of the
+        same length aligned by sort order (column 4 of the original BED).
+    """
+    if len(atlas) == 0:
+        return {}
+    df = atlas.df.copy()
+    df["_midpoint"] = ((df["Start"] + df["End"]) // 2).astype("int64")
+    index: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+    for (chrom, strand), group in df.groupby(["Chromosome", "Strand"], observed=True):
+        sorted_group = group.sort_values("_midpoint")
+        index[(str(chrom), str(strand))] = (
+            sorted_group["_midpoint"].to_numpy(),
+            sorted_group["Name"].to_numpy(),
+        )
+    return index
+
+
 def match_iso_end(
     iso_3prime_pos: int,
     chrom: str,
     strand: str,
-    atlas: pr.PyRanges,
+    atlas_index: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]],
     tolerance: int = 24,
 ) -> dict[str, int | str | bool]:
-    """Look up an iso's 3' end against the atlas.
+    """Look up an iso's 3' end against a pre-built atlas index.
+
+    Uses ``numpy.searchsorted`` to find the closest PAS in O(log n) per call.
 
     Args:
         iso_3prime_pos: genomic 0-based position of the iso's 3' end. For ``+``
@@ -96,10 +131,9 @@ def match_iso_end(
             the leftmost exon's Start (first exonic base in genome coordinates).
         chrom: chromosome name. Must match atlas chromosome naming.
         strand: ``+`` or ``-``.
-        atlas: PyRanges from :func:`load_atlas`.
-        tolerance: nt window around the iso 3' end. The PAS midpoint
-            ``(Start + End) // 2`` must fall within ``[iso_3prime_pos - tol,
-            iso_3prime_pos + tol]`` for a hit.
+        atlas_index: dict returned by :func:`build_atlas_index`.
+        tolerance: nt window around the iso 3' end. The closest PAS midpoint
+            must fall within ``[iso_3prime_pos - tol, iso_3prime_pos + tol]``.
 
     Returns:
         Dict with keys ``matched`` (bool), ``pas_id`` (str, atlas Name column;
@@ -111,28 +145,29 @@ def match_iso_end(
         "pas_id": "",
         "distance_nt": -1,
     }
-    if len(atlas) == 0:
+    key = (chrom, strand)
+    if key not in atlas_index:
+        return empty
+    midpoints, names = atlas_index[key]
+    if midpoints.size == 0:
         return empty
 
-    df = atlas.df
-    candidates = df[(df["Chromosome"] == chrom) & (df["Strand"] == strand)]
-    if candidates.empty:
+    insertion = int(np.searchsorted(midpoints, iso_3prime_pos))
+    best_idx = -1
+    best_dist = tolerance + 1
+    for idx in (insertion - 1, insertion):
+        if 0 <= idx < midpoints.size:
+            d = abs(int(midpoints[idx]) - iso_3prime_pos)
+            if d < best_dist:
+                best_dist = d
+                best_idx = idx
+    if best_idx < 0:
         return empty
 
-    midpoints = ((candidates["Start"] + candidates["End"]) // 2).to_numpy()
-    distances = midpoints - iso_3prime_pos
-    abs_distances = abs(distances)
-    if abs_distances.size == 0:
-        return empty
-
-    best_idx = int(abs_distances.argmin())
-    best_dist = int(abs_distances[best_idx])
-    if best_dist > tolerance:
-        return empty
-
-    matched_row = candidates.iloc[best_idx]
+    distance = int(midpoints[best_idx]) - iso_3prime_pos
+    name = names[best_idx]
     return {
         "matched": True,
-        "pas_id": str(matched_row["Name"]) if pd.notna(matched_row["Name"]) else "",
-        "distance_nt": int(distances[best_idx]),
+        "pas_id": str(name) if pd.notna(name) else "",
+        "distance_nt": int(distance),
     }
