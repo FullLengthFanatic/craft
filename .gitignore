@@ -69,5 +69,8 @@ report.html
 annotated.h5ad
 craft_out*/
 
-# Benchmark caches (regenerable from run_bench1.py)
+# Benchmark caches (regenerable from run_bench*.py)
 benchmarks/cache/
+
+# External tool binaries (download from upstream)
+.tools/
