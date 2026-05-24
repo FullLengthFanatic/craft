@@ -68,3 +68,6 @@ per_isoform.json
 report.html
 annotated.h5ad
 craft_out*/
+
+# Benchmark caches (regenerable from run_bench1.py)
+benchmarks/cache/
