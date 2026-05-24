@@ -81,6 +81,27 @@ NMD-sensitive transcripts are upregulated under UPF1 KD at 16.1% vs 11.6% for NM
 
 Figure committed at `benchmarks/figures/bench3_enrichment_panel.{png,json}`; raw contingency + odds ratio in `benchmarks/figures/bench3_enrichment.tsv`. Quant summary in `benchmarks/figures/bench3_quant_summary.tsv`.
 
+### Bench 2: real-data ORF concordance on bcM0003 (2026-05-24)
+
+Real PacBio sc Iso-Seq stand-in for the originally-planned MAS-Seq paired bulk + sc design (the MAS-Seq paper turned out to use tumor T cells, not WTC11 - the plan was based on a wrong premise). Bench 2 instead asks: "on the user's own bcM0003 sc Iso-Seq (698,049 isoforms), when each iso retains a recoverable ORF from its GENCODE parent, does CRAFT's propagation outperform orfipy de novo?"
+
+`benchmarks/run_bench2.py` reuses the cached bcM0003 CRAFT output (`craft_out_atlas_filtered/per_isoform.tsv`) and the GENCODE v45 pool pickle from Bench 1. For each iso it projects the parent's `start_codon` + `stop_codon` genomic positions onto the iso's exon structure; isos where either codon falls outside the iso's exons are dropped (truth not recoverable). 223,976 eligible isos remain. Runs orfipy on iso transcript-orientation sequences (batched, 18 s), parses CRAFT's `propagated_cds_intervals` and maps both calls into iso transcript coordinates, scores against truth, stratifies by `completeness`.
+
+Start-codon exact-match rate by completeness category:
+
+| completeness | n | CRAFT | orfipy | gap |
+|---|---|---|---|---|
+| full_length        | 95,395 | 1.000 | 0.727 | +27.3 ppt |
+| alt_3prime_end     | 79,511 | 1.000 | 0.765 | +23.5 ppt |
+| truncated_5p       | 23,576 | 1.000 | 0.740 | +26.0 ppt |
+| truncated_3p       |  4,410 | 1.000 | 0.851 | +14.9 ppt |
+| truncated_both     |  9,506 | 1.000 | 0.790 | +21.0 ppt |
+| internal_fragment  | 11,578 | 1.000 | 0.812 | +18.8 ppt |
+
+Caveat. CRAFT's near-perfect score is partially tautological: truth is defined as "parent's GENCODE CDS projected onto the iso", and CRAFT's propagated coordinates come from the same parent. The honest claim from this bench is the orfipy bar: **on real long-read sc isoforms, de novo prediction misses the start codon 15-28% of the time across every completeness category, even when the ORF is fully recoverable**. Propagation closes that gap. The right panel of the figure (CRAFT accuracy by `orf_confidence`) is uninformative for the same reason and is kept only as a sanity check.
+
+Figure committed at `benchmarks/figures/bench2_concordance_panel.{png,json}`; per-row scored DataFrame cached at `benchmarks/cache/bench2/bench2_scores.tsv.gz` (gitignored). Total wall: 3 min (parse 22 s, truth projection 2.4 min, orfipy 18 s, score + figure < 30 s).
+
 ## [0.1.0] - 2026-05-13
 
 ### Added
