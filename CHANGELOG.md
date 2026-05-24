@@ -62,6 +62,25 @@ CRAFT propagation hits the start codon **0.98-1.00** across the grid; orfipy bot
 
 Figure committed at `benchmarks/figures/bench1_recovery_panel.{png,json}`.
 
+### Bench 3: NMD-target enrichment in UPF1-KD bulk RNA-seq (2026-05-24)
+
+Three-step pipeline:
+
+1. **NMD universe.** `benchmarks/run_bench3_universe.py` filters GENCODE v45 to 80,441 transcripts (`protein_coding` + `nonsense_mediated_decay`, complete CDS) and runs CRAFT on the filtered iso GTF against the full GENCODE reference. CRAFT labels 7,282 transcripts (9.1%) as NMD-sensitive, 72,906 as escaped, 253 as not_applicable. ~16 min wall.
+2. **Salmon quant.** `benchmarks/run_bench3_quant.py` pulls 6 GSE86148 (HeLa, Lykke-Andersen lab, SRP083135) samples - 3 scr controls (SRR4081222-224) + 3 UPF1 KDs (SRR4081225-227) - and runs salmon transcript-level quant against the GENCODE v45 transcriptome. Mapping rates 83.9-85.9% across all 6 samples, no batch outliers. ~70 min wall.
+3. **DE + enrichment.** `benchmarks/run_bench3_analysis.py` runs pydeseq2 (Wald test, `~condition`, UPF1-KD vs control), joins per-transcript log2FC + padj against the CRAFT NMD universe, and tests whether NMD-sensitive transcripts are enriched among UPF1-KD-upregulated (log2FC >= 1, padj < 0.05). 2x2 contingency on 47,378 eligible transcripts (propagated_intact or disrupted, NMD label sensitive or escaped, complete DE results):
+
+|              | upregulated | not upregulated |
+|---|---|---|
+| **NMD-sensitive** |   620 |  3,228 |
+| **NMD-escaped**   | 5,070 | 38,460 |
+
+Fisher's exact (one-sided, alternative=greater): **odds ratio 1.457, p = 2.4e-15**.
+
+NMD-sensitive transcripts are upregulated under UPF1 KD at 16.1% vs 11.6% for NMD-escaped transcripts. The effect size is modest (the rule cascade is structural, not biochemical, and 48h siRNA KD has secondary effects beyond NMD), but the directionality and significance match the methods-paper claim that CRAFT's NMD labels track real NMD biology.
+
+Figure committed at `benchmarks/figures/bench3_enrichment_panel.{png,json}`; raw contingency + odds ratio in `benchmarks/figures/bench3_enrichment.tsv`. Quant summary in `benchmarks/figures/bench3_quant_summary.tsv`.
+
 ## [0.1.0] - 2026-05-13
 
 ### Added

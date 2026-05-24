@@ -1,0 +1,12 @@
+metric	value
+contingency_a_sens_up	620.0
+contingency_b_sens_notup	3228.0
+contingency_c_notsens_up	5070.0
+contingency_d_notsens_notup	38460.0
+odds_ratio	1.4569997726989434
+p_value_one_sided	2.4448905781196353e-15
+n_eligible	47378.0
+n_sensitive	3848.0
+n_upregulated	5690.0
+l2fc_threshold	1.0
+padj_threshold	0.05
