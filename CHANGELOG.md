@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-25
+
+Docs-only patch release. Addresses review findings on the methods-paper draft committed in v1.4.
+
+### Changed
+- `docs/methods_paper.md`:
+  - Verified GSE86148 dataset citation. Replaced wrong attribution (Boehm 2021 / Lykke-Andersen lab) with Colombo M, Karousis ED, Bourquin J, Bruggmann R, Mühlemann O (2017) *RNA* 23:189-201; Mühlemann lab at Bern. PMC5238794.
+  - Merged duplicate refs 5 and 6 (both de la Fuente 2020 *Genome Biology*) into a single ref covering tappAS and the IsoAnnotLite companion tool. Renumbered in-text refs 6-24 down by 1; total references now 23.
+  - Added a Bench 3 positive-control comparison using GENCODE's curated `nonsense_mediated_decay` annotation: GENCODE NMD OR=1.415 (p=1.3e-24) vs CRAFT NMD-sensitive OR=1.457 on a 4× smaller positive set, with 3,724-transcript overlap (96.8% of CRAFT-sensitive transcripts are also GENCODE-NMD). New Table 3b.
+  - Added drop-out accounting paragraph: 80,441 NMD universe → 47,378 eligible (28,261 transcripts dropped by salmon low-count filter, 4,802 dropped because NMD rules don't apply).
+  - Annotated Table 1 caption as "8 of 12 cells" with pointer to the full per-cell cache.
+  - Added markdown image embeds for all three figures (`![Figure N](../benchmarks/figures/...)`).
+
+### Packaging
+- Package version bumped from `1.4` to `1.4.1` in `src/craft/__init__.py` and `CITATION.cff`. No source code changes; tests + ruff unchanged from v1.4.
+
 ## [1.4] - 2026-05-25
 
 ### Packaging
