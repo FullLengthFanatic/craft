@@ -20,7 +20,7 @@ We validate the central claim through three benchmarks. On simulated truncation 
 
 Long-read RNA sequencing has moved from a specialty tool to a routine method for isoform-level transcript characterization. PacBio Iso-Seq and ONT direct RNA both produce reads long enough to span entire transcripts, and single-cell extensions (MAS-Seq [1], scISOr-Seq [2], scNanoSeq [3]) bring isoform resolution to the per-cell scale. The dominant downstream questions are no longer "which transcripts are present" but "what do those transcripts encode": where the open reading frame starts and stops, whether the predicted protein retains its functional domains, whether the transcript is likely to undergo nonsense-mediated decay.
 
-The functional-annotation tooling has not kept pace. IsoformSwitchAnalyzeR [4] is the most complete option but is R-only and built around bulk switch-detection. IsoAnnotLite [5] is Python-native but only transfers annotations to known isoforms (those that exactly match a reference transcript); genuinely novel isoforms get nothing. tappAS [6] is a broader desktop GUI, last meaningfully updated in 2021. None of these tools were designed for the dominant single-cell long-read failure mode: 5' or 3' truncation of an otherwise-recognizable isoform.
+The functional-annotation tooling has not kept pace. IsoformSwitchAnalyzeR [4] is the most complete option but is R-only and built around bulk switch-detection. IsoAnnotLite [5] is Python-native but only transfers annotations to known isoforms (those that exactly match a reference transcript); genuinely novel isoforms get nothing. tappAS [5] is a broader desktop GUI, last meaningfully updated in 2021. None of these tools were designed for the dominant single-cell long-read failure mode: 5' or 3' truncation of an otherwise-recognizable isoform.
 
 CRAFT addresses the gap. It takes a long-read isoform GTF (from FLAIR, IsoQuant, Bambu, FLAMES, or SQANTI3), a reference annotation GTF with CDS records (GENCODE or Ensembl), and a genome FASTA, and emits per-isoform functional annotations with explicit truncation-aware confidence flags. The novelty is the ORF assignment strategy: for each novel isoform CRAFT identifies its best-matching reference transcript by maximal splice-junction sharing, then propagates the reference CDS coordinates onto the isoform through shared exons. When the propagation succeeds and both start and stop codons fall inside the isoform's exons, the propagated ORF is reported with high confidence. When truncation has clipped past the start or the stop, the outcome is labeled accordingly (`start_lost`, `stop_not_observed`, `stop_at_alt_polya`) and confidence is downgraded. Only isoforms with no usable parent fall through to a de novo `orfipy` call.
 
@@ -32,9 +32,9 @@ Three benchmarks back the central claim that propagation beats de novo predictio
 
 ### 2.1 Software overview
 
-CRAFT is a Python ≥ 3.10 package with a Click-based CLI. The pipeline runs in a single `craft annotate` invocation. Required inputs are the isoform GTF, reference GTF, and genome FASTA; the optional `--polya-atlas` flag accepts a BED of curated polyadenylation sites for direct-evidence alternative-3'-end detection (PolyASite v3.0 [7] and PolyA_DB v4 [8] are recommended). Outputs are a per-isoform TSV with one row per input isoform, the equivalent JSON for programmatic consumers, an AnnData (`.h5ad`) export with isoforms as `var` and functional annotations as `var` columns, and a self-contained interactive HTML report.
+CRAFT is a Python ≥ 3.10 package with a Click-based CLI. The pipeline runs in a single `craft annotate` invocation. Required inputs are the isoform GTF, reference GTF, and genome FASTA; the optional `--polya-atlas` flag accepts a BED of curated polyadenylation sites for direct-evidence alternative-3'-end detection (PolyASite v3.0 [6] and PolyA_DB v4 [7] are recommended). Outputs are a per-isoform TSV with one row per input isoform, the equivalent JSON for programmatic consumers, an AnnData (`.h5ad`) export with isoforms as `var` and functional annotations as `var` columns, and a self-contained interactive HTML report.
 
-The internals are organized as composable modules under `src/craft/core/`: `completeness` (structural classification against the reference), `orf/propagation` and `orf/denovo` (the two ORF paths), `orf/confidence` (truncation-aware confidence scoring), `nmd` (rule cascade), `pfam` (domain disruption via pyhmmer [9]), `utr3` (3' UTR features and polyA atlas matching), `report` (plotly HTML), and `export` (AnnData/MuData writers).
+The internals are organized as composable modules under `src/craft/core/`: `completeness` (structural classification against the reference), `orf/propagation` and `orf/denovo` (the two ORF paths), `orf/confidence` (truncation-aware confidence scoring), `nmd` (rule cascade), `pfam` (domain disruption via pyhmmer [8]), `utr3` (3' UTR features and polyA atlas matching), `report` (plotly HTML), and `export` (AnnData/MuData writers).
 
 Two performance optimizations matter at scale. The polyA atlas match is pre-indexed by (chromosome, strand) with sorted PAS midpoints and resolved via `numpy.searchsorted` in O(log n) per isoform, reducing chr22 runtime with a filtered PolyASite v3.0 atlas from approximately three minutes to under thirty seconds. The pipeline filters isoforms on contigs absent from the genome FASTA up front so that the per-isoform sequence-fetch loop cannot abort mid-run on random or alt contigs that PacBio collapse routinely emits. A full-genome run on a 698k-isoform PacBio bcM0003 sample completes in 71 minutes with peak resident memory of approximately 18 GB.
 
@@ -44,7 +44,7 @@ To isolate the propagation versus de novo question from confounders, we truncate
 
 CRAFT's propagation was run with the original full-length transcript as the parent reference; orfipy was run de novo on the truncated transcript sequence with no parent information. Across 92,718 scored rows in 8.6 minutes wall time, CRAFT's start-codon exact-match rate sits at 0.98 to 1.00 in every cell; orfipy plateaus at 0.94 to 0.95 (Table 1, Figure 1). CRAFT's mean absolute ORF length error is exactly zero nucleotides for every 3'-truncated cell (3'-end truncation does not move the start codon, and propagation inherits the parent's positions); orfipy sits between 8 and 12 nucleotides across all conditions because the alternative ATGs it selects are typically a few codons downstream of the true start. The one cell where orfipy edges out CRAFT (50% 5'-truncation, n=35 intact-truth isoforms) is too small to read into: a single CRAFT failure shifts the rate by 2.8 percentage points.
 
-**Table 1. Bench 1 selected cells.**
+**Table 1. Bench 1 selected cells (8 of 12 rate × orientation conditions, averaged over 3 seeds each; full per-cell scores at `benchmarks/cache/bench1_scores/`).**
 
 | rate | orientation | n     | CRAFT start | orfipy start | CRAFT \|len_err\| | orfipy \|len_err\| |
 |------|-------------|-------|-------------|--------------|-------------------|--------------------|
@@ -57,7 +57,9 @@ CRAFT's propagation was run with the original full-length transcript as the pare
 | 25%  | both        |   604 | 0.994       | 0.938        | 3.5 nt            | 11.5 nt            |
 | 50%  | both        |    84 | 0.985       | 0.937        | 5.7 nt            | 9.4 nt             |
 
-The five-percentage-point start-exact gap is consistent across truncation rates and orientations, which is the cleanest statement of the central methods claim: a de novo predictor with no parent information picks a wrong-but-nearby ATG for one in every twenty truncated transcripts, and propagation closes that gap.
+The five-to-six-percentage-point start-exact gap is consistent across truncation rates and orientations, which is the cleanest statement of the central methods claim: a de novo predictor with no parent information picks a wrong-but-nearby ATG for roughly one in every twenty truncated transcripts, and propagation closes that gap.
+
+![Figure 1. Bench 1 recovery panel.](../benchmarks/figures/bench1_recovery_panel.png)
 
 ### 2.3 Bench 2: real-data ORF concordance on bcM0003 single-cell PacBio Iso-Seq
 
@@ -78,13 +80,17 @@ For these isoforms we compared CRAFT's propagated ORF (parsed from `propagated_c
 
 CRAFT's perfect score is partially tautological: the truth is defined as parent-projected GENCODE coordinates, and CRAFT propagates from the same parent. The valid claim is the orfipy bar: on real long-read single-cell isoforms, even when the truth ORF is fully recoverable, de novo prediction picks the wrong start codon 15 to 28 percent of the time. The orfipy gap is larger than in Bench 1 (Bench 1 sits around five percentage points across all conditions) because real PacBio data has more diverse 5'/3' end variability than clean rectangular truncation, including alternative transcription start sites, alternative polyadenylation, and intronic noise that creates additional plausible ATG candidates downstream of the true start.
 
+![Figure 2. Bench 2 concordance panel.](../benchmarks/figures/bench2_concordance_panel.png)
+
 ### 2.4 Bench 3: CRAFT NMD-sensitive labels track UPF1-KD response
 
-The third benchmark tests whether CRAFT's rule-based NMD label correlates with the biochemical response when the NMD machinery is disabled. We took the GSE86148 dataset (HeLa cells, Lykke-Andersen lab, SRP083135 [10]) and quantified the three scrambled-control and three UPF1-knockdown bulk RNA-seq samples against the GENCODE v45 transcriptome with salmon [11]. Per-sample mapping rates were 83.9 to 85.9 percent with no batch outliers. Differential expression was tested with pydeseq2 [12] using the Wald test on the `~condition` design.
+The third benchmark tests whether CRAFT's rule-based NMD label correlates with the biochemical response when the NMD machinery is disabled. We took the GSE86148 dataset (HeLa cells, Mühlemann lab, SRP083135 [9]) and quantified the three scrambled-control and three UPF1-knockdown bulk RNA-seq samples against the GENCODE v45 transcriptome with salmon [10]. Per-sample mapping rates were 83.9 to 85.9 percent with no batch outliers. Differential expression was tested with pydeseq2 [11] using the Wald test on the `~condition` design.
 
-In parallel, we built a CRAFT NMD universe by running CRAFT on the 80,441 GENCODE v45 transcripts that are protein-coding or nonsense_mediated_decay-annotated and have complete CDS, with the full GENCODE GTF as reference. CRAFT labeled 7,282 transcripts (9.1%) as NMD-sensitive, 72,906 as escaped, and 253 as not_applicable. We merged the DE results against this universe, restricted to transcripts whose CRAFT outcome is `propagated_intact` or `disrupted` with a clean stop codon (47,378 eligible transcripts), and tested for enrichment of CRAFT NMD-sensitive labels among UPF1-KD-upregulated transcripts (log2 fold-change ≥ 1, adjusted p < 0.05).
+In parallel, we built a CRAFT NMD universe by running CRAFT on the 80,441 GENCODE v45 transcripts that are protein-coding or `nonsense_mediated_decay`-annotated and have complete CDS, with the full GENCODE GTF as reference. CRAFT labeled 7,282 transcripts (9.1%) as NMD-sensitive, 72,906 as escaped, and 253 as not_applicable.
 
-**Table 3. Bench 3 contingency table.**
+The eligible set for enrichment testing is the intersection of the NMD universe with pydeseq2's DE output (52,180 transcripts after the low-count filter; 28,261 NMD-universe transcripts dropped because they fall below the salmon expression threshold or are absent from the v45 transcriptome quant), further restricted to transcripts whose CRAFT outcome is `propagated_intact` or `disrupted` with a clean stop codon (47,378 transcripts; 4,802 dropped because the NMD rules do not apply, mainly `stop_at_alt_polya` and `stop_not_observed`). We tested for enrichment of CRAFT NMD-sensitive labels among UPF1-KD-upregulated transcripts (log2 fold-change ≥ 1, adjusted p < 0.05).
+
+**Table 3. Bench 3 contingency table (CRAFT NMD label).**
 
 |              | upregulated | not upregulated |
 |--------------|-------------|-----------------|
@@ -93,7 +99,20 @@ In parallel, we built a CRAFT NMD universe by running CRAFT on the 80,441 GENCOD
 
 The one-sided Fisher's exact test gives odds ratio 1.457 and p = 2.4e-15. CRAFT-labeled NMD-sensitive transcripts are upregulated under UPF1 KD at 16.1 percent versus 11.6 percent for NMD-escaped transcripts. The log2 fold-change CDF for NMD-sensitive transcripts is visibly right-shifted versus NMD-escaped (Figure 3), which is the directionality NMD biology predicts when UPF1 is silenced.
 
-The modest effect size is expected. CRAFT's NMD label is structural (rule cascade over 50nt distance to last junction, last exon length, start-proximal escape) and does not capture the full set of biochemical determinants that govern UPF1 substrate specificity, particularly in 48-hour siRNA experiments where secondary effects compound. The benchmark answers the directionality question (do CRAFT's labels track real NMD biology) affirmatively rather than claiming the rule cascade is a perfect biochemical predictor.
+**Positive control: GENCODE's curated NMD annotation.** To anchor the effect size, we ran the same enrichment using GENCODE v45's transcript-level `transcript_type == "nonsense_mediated_decay"` annotation instead of CRAFT's label. Of the 47,378 eligible transcripts, GENCODE tags 9,128 as NMD. The contingency table is below.
+
+**Table 3b. Bench 3 positive control (GENCODE `nonsense_mediated_decay` annotation).**
+
+|              | upregulated | not upregulated |
+|--------------|-------------|-----------------|
+| GENCODE NMD  |  1,388      |  7,740          |
+| Other        |  4,302      | 33,948          |
+
+Fisher's exact gives odds ratio 1.415, p = 1.3e-24. CRAFT's rule-based label achieves a slightly higher odds ratio (1.457 vs 1.415) on a roughly four-fold smaller positive set (3,848 vs 9,128 transcripts), with overlap of 3,724 transcripts (96.8 percent of CRAFT-sensitive transcripts are also GENCODE-NMD; 5,404 GENCODE-NMD transcripts pass one of CRAFT's four escape rules and are labeled escaped). The structural rule cascade captures effectively the same biology as the GENCODE curators do, and the OR comparison is the right reading of the effect size: CRAFT's labels are not weaker than a hand-curated annotation, they are just applied to a tighter conservatively-defined subset.
+
+The modest absolute effect size (OR ≈ 1.4 for both CRAFT and GENCODE labels) is expected: NMD substrate specificity has biochemical determinants beyond what either a rule cascade or a curated annotation captures (EJC deposition, secondary structure, codon usage, ribosomal occupancy), and 48-hour siRNA knockdowns also activate secondary pathways. The benchmark answers the directionality question (do CRAFT's labels track real NMD biology) affirmatively at strength comparable to the best available structural reference.
+
+![Figure 3. Bench 3 enrichment panel.](../benchmarks/figures/bench3_enrichment_panel.png)
 
 ---
 
@@ -101,11 +120,11 @@ The modest effect size is expected. CRAFT's NMD label is structural (rule cascad
 
 ### 3.1 ORF propagation
 
-The propagation algorithm operates per isoform in three steps. First, the isoform's exon set is matched against reference transcript exons via maximal splice-junction sharing using pyranges [13] interval operations; ties are broken by exon-coverage fraction. The matched reference transcript becomes the isoform's `parent_tx_id`. Second, the parent's CDS records are walked in genomic order from the start codon. As long as each exon-exon junction in the parent's CDS region is also a junction in the isoform, CRAFT projects the parent's CDS exon onto the isoform with the same genomic coordinates. At the first junction divergence, CRAFT records the structural change (alternative splice site, exon skip, intron retention, alternative transcription start site) and continues propagation only if the reading frame is preserved. Third, the outcome is labeled. `propagated_intact` means both start and stop codons are inside the isoform's exons. `start_lost` means the start codon is outside the isoform (typical for 5'-truncated isoforms with short 5' UTRs). `stop_not_observed` means the start is present but the stop is past the isoform's 3' end. `stop_at_alt_polya` means the isoform terminates at an alternative polyadenylation site upstream of the parent's stop codon, evidenced either by a canonical poly(A) signal motif within fifty nucleotides of the isoform's 3' end or by a hit against a user-supplied PAS atlas BED.
+The propagation algorithm operates per isoform in three steps. First, the isoform's exon set is matched against reference transcript exons via maximal splice-junction sharing using pyranges [12] interval operations; ties are broken by exon-coverage fraction. The matched reference transcript becomes the isoform's `parent_tx_id`. Second, the parent's CDS records are walked in genomic order from the start codon. As long as each exon-exon junction in the parent's CDS region is also a junction in the isoform, CRAFT projects the parent's CDS exon onto the isoform with the same genomic coordinates. At the first junction divergence, CRAFT records the structural change (alternative splice site, exon skip, intron retention, alternative transcription start site) and continues propagation only if the reading frame is preserved. Third, the outcome is labeled. `propagated_intact` means both start and stop codons are inside the isoform's exons. `start_lost` means the start codon is outside the isoform (typical for 5'-truncated isoforms with short 5' UTRs). `stop_not_observed` means the start is present but the stop is past the isoform's 3' end. `stop_at_alt_polya` means the isoform terminates at an alternative polyadenylation site upstream of the parent's stop codon, evidenced either by a canonical poly(A) signal motif within fifty nucleotides of the isoform's 3' end or by a hit against a user-supplied PAS atlas BED.
 
 ### 3.2 De novo path
 
-When no parent transcript matches the isoform (`novel_no_match` completeness category), the propagation path is skipped and `orfipy` [14] is invoked on the isoform's transcript-orientation sequence with a default minimum ORF length of 75 nucleotides, ATG start codons, and TAA/TAG/TGA stops. The longest ORF on the forward strand is reported. The de novo path is used for less than twelve percent of isoforms in typical PacBio runs (11.3 percent for bcM0003) because most novel isoforms share enough junction structure with at least one reference transcript to support propagation.
+When no parent transcript matches the isoform (`novel_no_match` completeness category), the propagation path is skipped and `orfipy` [13] is invoked on the isoform's transcript-orientation sequence with a default minimum ORF length of 75 nucleotides, ATG start codons, and TAA/TAG/TGA stops. The longest ORF on the forward strand is reported. The de novo path is used for less than twelve percent of isoforms in typical PacBio runs (11.3 percent for bcM0003) because most novel isoforms share enough junction structure with at least one reference transcript to support propagation.
 
 ### 3.3 Truncation-aware confidence
 
@@ -113,7 +132,7 @@ Each propagated or de novo ORF is assigned an `orf_confidence` label in {`high`,
 
 ### 3.4 NMD rule cascade
 
-For isoforms with a propagated stop codon that is observed in the read (outcome in {`propagated_intact`, `disrupted`}), CRAFT applies four rules in priority order. (1) If the stop codon falls inside the last exon, the isoform is NMD-escaped. (2) If the stop codon is within fifty nucleotides of the last exon-exon junction, the isoform is NMD-escaped (50nt rule, the canonical NMD escape window [15]). (3) If the propagated CDS is shorter than 150 nucleotides, the isoform is NMD-escaped (start-proximal escape [16]). (4) If the last exon is longer than 400 nucleotides, the isoform is NMD-escaped (long last exon escape). Isoforms surviving all four escape rules are labeled `sensitive` with rule `ptc_50nt_rule`. Isoforms without an observed stop (`stop_not_observed`, `stop_at_alt_polya`) are labeled `not_applicable` since the rule cascade cannot be applied.
+For isoforms with a propagated stop codon that is observed in the read (outcome in {`propagated_intact`, `disrupted`}), CRAFT applies four rules in priority order. (1) If the stop codon falls inside the last exon, the isoform is NMD-escaped. (2) If the stop codon is within fifty nucleotides of the last exon-exon junction, the isoform is NMD-escaped (50nt rule, the canonical NMD escape window [14]). (3) If the propagated CDS is shorter than 150 nucleotides, the isoform is NMD-escaped (start-proximal escape [15]). (4) If the last exon is longer than 400 nucleotides, the isoform is NMD-escaped (long last exon escape). Isoforms surviving all four escape rules are labeled `sensitive` with rule `ptc_50nt_rule`. Isoforms without an observed stop (`stop_not_observed`, `stop_at_alt_polya`) are labeled `not_applicable` since the rule cascade cannot be applied.
 
 ### 3.5 Pfam domain disruption
 
@@ -121,7 +140,7 @@ When a Pfam HMM file is provided via `--pfam-hmm`, CRAFT translates the propagat
 
 ### 3.6 3' UTR features and polyA atlas matching
 
-CRAFT computes 3' UTR length and length delta versus the parent for every isoform with a propagated stop codon. The canonical poly(A) signal motif (AATAAA and ten documented variants [17]) is scanned in the last fifty nucleotides of the isoform's transcript-orientation sequence. When `--polya-atlas` is supplied, the iso's 3' end position is matched against the pre-indexed atlas within a 24 nucleotide tolerance window; PAS evidence sources are recorded as `polya_db`, `canonical_motif`, or `none` in priority order. The PAS-evidence boolean is used as primary input to the `truncated_3p` versus `alt_3prime_end` reclassification.
+CRAFT computes 3' UTR length and length delta versus the parent for every isoform with a propagated stop codon. The canonical poly(A) signal motif (AATAAA and ten documented variants [16]) is scanned in the last fifty nucleotides of the isoform's transcript-orientation sequence. When `--polya-atlas` is supplied, the iso's 3' end position is matched against the pre-indexed atlas within a 24 nucleotide tolerance window; PAS evidence sources are recorded as `polya_db`, `canonical_motif`, or `none` in priority order. The PAS-evidence boolean is used as primary input to the `truncated_3p` versus `alt_3prime_end` reclassification.
 
 ### 3.7 Benchmark protocols
 
@@ -137,7 +156,7 @@ The exon truncator and the sequence truncator are kept in lock-step so the same 
 
 ### 3.8 Software environment
 
-CRAFT requires Python ≥ 3.10. Runtime dependencies are pysam [18], pyranges [13], pandas, numpy, scipy, click, plotly, tqdm, pyhmmer [9], orfipy [14], anndata [19], and mudata. Development dependencies add pytest, pytest-cov, and ruff. Benchmarks also require pydeseq2 [12], salmon 1.11.4 [11], and the NCBI sra-toolkit [20]. The full test suite has 164 main-package tests plus 26 benchmark-library tests; ruff lint is clean. CRAFT is MIT-licensed.
+CRAFT requires Python ≥ 3.10. Runtime dependencies are pysam [17], pyranges [12], pandas, numpy, scipy, click, plotly, tqdm, pyhmmer [8], orfipy [13], anndata [18], and mudata. Development dependencies add pytest, pytest-cov, and ruff. Benchmarks also require pydeseq2 [11], salmon 1.11.4 [10], and the NCBI sra-toolkit [19]. The full test suite has 164 main-package tests plus 26 benchmark-library tests; ruff lint is clean. CRAFT is MIT-licensed.
 
 ---
 
@@ -147,13 +166,13 @@ CRAFT validates a simple methodological point: when a long-read isoform shares e
 
 Three caveats limit the strength of the claims.
 
-Bench 2's CRAFT-side number is partially tautological. The "truth" is defined as the parent's GENCODE CDS projected onto the isoform, and CRAFT's propagation uses the same parent's coordinates. The honest reading is the orfipy bar: real long-read isoforms have enough sequence-level confounders that de novo prediction misses the start 15-28 percent of the time. An independent truth source, for example bulk Iso-Seq from the same biological sample with an orthogonal ORF caller, would tighten this claim. We could not identify a published paired bulk-plus-single-cell PacBio dataset suitable for the comparison at the time of writing; LRGASP [21] WTC11 has bulk PacBio but the matched sc data uses a different platform (Nanopore), and the MAS-Seq paper's data is tumor T cells without matched bulk. Adding this benchmark when paired data becomes available is the most natural extension.
+Bench 2's CRAFT-side number is partially tautological. The "truth" is defined as the parent's GENCODE CDS projected onto the isoform, and CRAFT's propagation uses the same parent's coordinates. The honest reading is the orfipy bar: real long-read isoforms have enough sequence-level confounders that de novo prediction misses the start 15-28 percent of the time. An independent truth source, for example bulk Iso-Seq from the same biological sample with an orthogonal ORF caller, would tighten this claim. We could not identify a published paired bulk-plus-single-cell PacBio dataset suitable for the comparison at the time of writing; LRGASP [20] WTC11 has bulk PacBio but the matched sc data uses a different platform (Nanopore), and the MAS-Seq paper's data is tumor T cells without matched bulk. Adding this benchmark when paired data becomes available is the most natural extension.
 
 Bench 3's NMD effect size is modest. The 1.46 odds ratio is significant at p = 2.4e-15 because of the sample size (47k eligible transcripts), but the per-transcript classifier is a rule cascade against structural features, not a biochemical model. UPF1 substrate specificity has biochemical determinants beyond what the four rules capture (EJC deposition, secondary structure, codon usage, ribosomal occupancy), and 48-hour siRNA knockdowns also activate secondary pathways. We did not extend the benchmark to UPF2 or SMG6 knockdowns from the same study (the GSE86148 series includes these), which would test whether CRAFT's labels are specific to canonical NMD or also track ancillary decay pathways.
 
-The de novo comparator is `orfipy` alone. CPAT [22] and TransDecoder [23] are the conventional bulk-RNA-seq baselines but they were excluded from the comparison for scope reasons (and because CRAFT's de novo fallback is `orfipy` itself, making the propagation-versus-de-novo question a direct test of the propagation logic rather than a multi-tool shootout). Future work should extend the comparison.
+The de novo comparator is `orfipy` alone. CPAT [21] and TransDecoder [22] are the conventional bulk-RNA-seq baselines but they were excluded from the comparison for scope reasons (and because CRAFT's de novo fallback is `orfipy` itself, making the propagation-versus-de-novo question a direct test of the propagation logic rather than a multi-tool shootout). Future work should extend the comparison.
 
-Beyond the benchmarks, the implementation includes design choices worth flagging. Mispriming detection (reads that primed off internal poly(A) tracts rather than the polyA tail) is intentionally not in CRAFT; it lives in our sibling tool `tecap` [24], and the two tools are complementary. Single-cell per-cell count integration into the AnnData export's `X` matrix is planned but not yet implemented; the current export populates `var` columns and leaves `X` empty unless the user provides a count matrix at runtime. SignalP and transmembrane annotations, disorder prediction, ClinVar disease-variant integration, and miRNA target site changes are all deferred to a future v2.
+Beyond the benchmarks, the implementation includes design choices worth flagging. Mispriming detection (reads that primed off internal poly(A) tracts rather than the polyA tail) is intentionally not in CRAFT; it lives in our sibling tool `tecap` [23], and the two tools are complementary. Single-cell per-cell count integration into the AnnData export's `X` matrix is planned but not yet implemented; the current export populates `var` columns and leaves `X` empty unless the user provides a count matrix at runtime. SignalP and transmembrane annotations, disorder prediction, ClinVar disease-variant integration, and miRNA target site changes are all deferred to a future v2.
 
 ---
 
@@ -165,30 +184,29 @@ Source code, runnable benchmark scripts, all committed figures, and the full tes
 
 ## References
 
-1. Al'Khafaji AM et al. (2024) High-throughput RNA isoform sequencing using programmable cDNA concatenation. Nat Biotechnol 42, 582-586.
-2. Gupta I et al. (2018) Single-cell isoform RNA sequencing characterizes isoforms in thousands of cerebellar cells. Nat Biotechnol 36, 1197-1202.
-3. Tian L et al. (2021) Comprehensive characterization of single-cell full-length isoforms in human and mouse with long-read sequencing. Genome Biol 22, 310.
-4. Vitting-Seerup K, Sandelin A (2019) IsoformSwitchAnalyzeR. Bioinformatics 35, 4469-4471.
-5. de la Fuente L et al. (2020) tappAS / IsoAnnotLite. Genome Biology 21, 119.
-6. de la Fuente L et al. (2020) tappAS: a comprehensive computational framework for the analysis of the functional impact of differential splicing. Genome Biology 21, 119.
-7. Herrmann CJ et al. (2020) PolyASite 2.0. Nucleic Acids Res 48, D174-D179. (v3.0 release: https://polyasite.unibas.ch/download/atlas/3.0/)
-8. Wang R et al. (2018) PolyA_DB. Nucleic Acids Res 46, D315-D319.
-9. Larralde M, Zeller G (2023) PyHMMER: a Python library binding to HMMER for efficient sequence analysis. Bioinformatics 39, btad214.
-10. Boehm V et al. (2021) SMG5-SMG7 authorize nonsense-mediated mRNA decay. Cell Reports 35, 109137. (GSE86148)
-11. Patro R et al. (2017) Salmon. Nat Methods 14, 417-419.
-12. Muzellec B et al. (2023) PyDESeq2. Bioinformatics 39, btad547.
-13. Stovner EB, Saetrom P (2020) PyRanges. Bioinformatics 36, 918-919.
-14. Singh U, Wurtele ES (2021) orfipy. Bioinformatics 37, 3022-3024.
-15. Nagy E, Maquat LE (1998) A rule for termination-codon position within intron-containing genes. Trends Biochem Sci 23, 198-199.
-16. Lindeboom RGH et al. (2019) The rules and impact of nonsense-mediated mRNA decay. Nat Genet 48, 1112-1118.
-17. Beaudoing E et al. (2000) Patterns of variant polyadenylation signal usage in human genes. Genome Res 10, 1001-1010.
-18. Pysam developers. pysam: https://github.com/pysam-developers/pysam.
-19. Virshup I et al. (2024) AnnData: Access and store annotated data matrices. JOSS 9, 4371.
-20. NCBI SRA Toolkit. https://github.com/ncbi/sra-tools.
-21. Pardo-Palacios FJ et al. (2024) Systematic assessment of long-read RNA-seq methods (LRGASP). Nat Methods.
-22. Wang L et al. (2013) CPAT. Nucleic Acids Res 41, e74.
-23. Haas BJ et al. (2013) De novo transcript sequence reconstruction from RNA-seq using the Trinity platform. Nat Protoc 8, 1494-1512.
-24. Picelli S. tecap: 3' end / priming-artifact diagnostics for long-read RNA-seq. https://github.com/FullLengthFanatic/tecap.
+1. Al'Khafaji AM, Smith JT, Garimella KV, et al. (2024) High-throughput RNA isoform sequencing using programmable cDNA concatenation. Nat Biotechnol 42, 582-586.
+2. Gupta I, Collier PG, Haase B, et al. (2018) Single-cell isoform RNA sequencing characterizes isoforms in thousands of cerebellar cells. Nat Biotechnol 36, 1197-1202.
+3. Tian L, Jabbari JS, Thijssen R, et al. (2021) Comprehensive characterization of single-cell full-length isoforms in human and mouse with long-read sequencing. Genome Biol 22, 310.
+4. Vitting-Seerup K, Sandelin A (2019) IsoformSwitchAnalyzeR: analysis of changes in genome-wide patterns of alternative splicing and its functional consequences. Bioinformatics 35, 4469-4471.
+5. de la Fuente L, Arzalluz-Luque Á, Tardáguila M, et al. (2020) tappAS: a comprehensive computational framework for the analysis of the functional impact of differential splicing. Genome Biology 21, 119. IsoAnnotLite (https://github.com/ConesaLab/IsoAnnotLite) is the Python companion tool described in the same paper.
+6. Herrmann CJ, Schmidt R, Kanitz A, Artimo P, Gruber AJ, Zavolan M (2020) PolyASite 2.0: a consolidated atlas of polyadenylation sites from 3' end sequencing. Nucleic Acids Res 48, D174-D179. v3.0 release at https://polyasite.unibas.ch/download/atlas/3.0/.
+7. Wang R, Zheng D, Yehia G, Tian B (2018) A compendium of conserved cleavage and polyadenylation events in mammalian genes. Nucleic Acids Res 46, D315-D319.
+8. Larralde M, Zeller G (2023) PyHMMER: a Python library binding to HMMER for efficient sequence analysis. Bioinformatics 39, btad214.
+9. Colombo M, Karousis ED, Bourquin J, Bruggmann R, Mühlemann O (2017) Transcriptome-wide identification of NMD-targeted human mRNAs reveals extensive redundancy between SMG6- and SMG7-mediated degradation pathways. RNA 23, 189-201. GEO: GSE86148, SRA: SRP083135.
+10. Patro R, Duggal G, Love MI, Irizarry RA, Kingsford C (2017) Salmon provides fast and bias-aware quantification of transcript expression. Nat Methods 14, 417-419.
+11. Muzellec B, Telenczuk M, Cabeli V, Andreux M (2023) PyDESeq2: a Python implementation of the DESeq2 method for differential expression analysis. Bioinformatics 39, btad547.
+12. Stovner EB, Sætrom P (2020) PyRanges: efficient comparison of genomic intervals in Python. Bioinformatics 36, 918-919.
+13. Singh U, Wurtele ES (2021) orfipy: a fast and flexible tool for extracting ORFs. Bioinformatics 37, 3022-3024.
+14. Nagy E, Maquat LE (1998) A rule for termination-codon position within intron-containing genes: when nonsense affects RNA abundance. Trends Biochem Sci 23, 198-199.
+15. Lindeboom RGH, Vermeulen M, Lehner B, Supek F (2019) The impact of nonsense-mediated mRNA decay on genetic disease, gene editing and cancer immunotherapy. Nat Genet 51, 1645-1651.
+16. Beaudoing E, Freier S, Wyatt JR, Claverie J-M, Gautheret D (2000) Patterns of variant polyadenylation signal usage in human genes. Genome Res 10, 1001-1010.
+17. Pysam developers. pysam: SAM/BAM/CRAM/VCF/BCF file IO from Python. https://github.com/pysam-developers/pysam.
+18. Virshup I, Rybakov S, Theis FJ, Angerer P, Wolf FA (2024) anndata: Annotated data matrices for Python. JOSS 9, 4371.
+19. NCBI SRA Toolkit. https://github.com/ncbi/sra-tools.
+20. Pardo-Palacios FJ, Wang D, Reese F, et al. (2024) Systematic assessment of long-read RNA-seq methods for transcript identification and quantification. Nat Methods (LRGASP consortium).
+21. Wang L, Park HJ, Dasari S, Wang S, Kocher J-P, Li W (2013) CPAT: coding-potential assessment tool using an alignment-free logistic regression model. Nucleic Acids Res 41, e74.
+22. Haas BJ, Papanicolaou A, Yassour M, et al. (2013) De novo transcript sequence reconstruction from RNA-seq using the Trinity platform for reference generation and analysis (TransDecoder companion). Nat Protoc 8, 1494-1512.
+23. Picelli S. tecap: 3' end / priming-artifact diagnostics for long-read RNA-seq. https://github.com/FullLengthFanatic/tecap.
 
 ---
 
