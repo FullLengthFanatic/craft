@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4] - 2026-05-25
+
+### Packaging
+- Package version bumped from `1.3` to `1.4` in `src/craft/__init__.py` and `CITATION.cff`. `craft --version` now reports `1.4`.
+
+### Added
+- `benchmarks/cbench/` dev-only package (truncation simulator, GENCODE loader, orfipy wrapper, scoring, plotly figure helpers). 26 tests.
+- Three runnable benchmark scripts under `benchmarks/`: `run_bench1.py` (simulated truncation, full grid), `run_bench2.py` (real-data ORF concordance on bcM0003), `run_bench3_universe.py` + `run_bench3_quant.py` + `run_bench3_analysis.py` (NMD-target enrichment in GSE86148 UPF1-KD bulk RNA-seq).
+- All benchmark figures committed under `benchmarks/figures/` as PNG + plotly JSON.
+- `bench` optional-dependency group (`jupyter`, `ipykernel`, `nbformat`).
+
 ### Changed
 - `core/polya_atlas.match_iso_end` now takes a pre-built index from `build_atlas_index` and uses `numpy.searchsorted` for O(log n) lookup per isoform instead of the previous linear pandas filter. Chr22 runtime with a filtered PolyASite v3.0 atlas drops from ~3 min to <30 s; the perf fix is what makes the full-genome run practical (commit `ce02461`).
 
