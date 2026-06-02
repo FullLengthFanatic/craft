@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- `core/orf/resolve.py`: rewrote the per-isoform hot path to operate on
+  precomputed numpy exon arrays instead of per-row pandas operations
+  (`iterrows`/`itertuples`, repeated `sort_values`, `.iloc`). On chr22 the
+  resolve step drops from ~103 s to ~6 s (17x) and the end-to-end run from
+  ~2m53s to ~1m50s. Output is byte-identical across all 62 columns; this is a
+  pure speedup with no behaviour change, which matters for full-genome inputs.
+
 ## [1.5.0] - 2026-06-02
 
 Sequence-aware functional consequences. All additions are additive: the original

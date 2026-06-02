@@ -14,23 +14,26 @@ consequences the geometric path cannot see:
 
 The geometric columns are left untouched; everything here lands in new
 ``resolved_*`` columns so the v1.4 outputs stay reproducible.
+
+Implementation note: this runs on *every* isoform, so the per-isoform work is
+done on precomputed numpy arrays rather than per-row pandas operations. The
+coordinate helpers mirror the (DataFrame-based) ones in
+:mod:`craft.core.orf.denovo`; they are duplicated here in array form purely for
+speed on full-genome inputs.
 """
 
 from enum import Enum
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyranges as pr
 import pysam
 
-from craft.core.orf.denovo import _transcript_sequence, _transcript_to_genomic_intervals
-from craft.core.orf.propagation import (
-    ORFOutcome,
-    _start_codon_pos,
-    _stop_codon_pos,
-)
+from craft.core.orf.propagation import ORFOutcome
 
 _STOP_CODONS = frozenset({"TAA", "TAG", "TGA"})
+_RC_TABLE = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
 # Default 50nt PTC window, shared with NMD. uORF NMD reuses the same threshold.
 UORF_PTC_THRESHOLD_NT = 50
@@ -73,32 +76,66 @@ _COLUMNS = [
 ]
 
 
-def _genomic_pos_to_tx_coord(pos: int, exons: pd.DataFrame, strand: str) -> int | None:
+def _reverse_complement(seq: str) -> str:
+    return seq.translate(_RC_TABLE)[::-1]
+
+
+def _genomic_pos_to_tx_coord(
+    pos: int, starts: np.ndarray, ends: np.ndarray, strand: str
+) -> int | None:
     """Transcript coordinate (0-based, 5'→3') of a genomic position, or None.
 
-    For ``+`` strand the transcript runs in genomic order; for ``-`` strand it
-    runs in reverse, so within an exon the 5'-most (smallest transcript) base is
-    the highest genomic coordinate.
+    ``starts``/``ends`` are the isoform's exons sorted ascending by start. For
+    ``+`` strand the transcript runs in genomic order; for ``-`` strand it runs
+    in reverse, so within an exon the 5'-most base is the highest coordinate.
     """
-    sorted_exons = exons.sort_values("Start").reset_index(drop=True)
+    n = len(starts)
+    cum = 0
     if strand == "+":
-        walk = list(sorted_exons.itertuples(index=False))
+        rng = range(n)
     elif strand == "-":
-        walk = list(sorted_exons.itertuples(index=False))[::-1]
+        rng = range(n - 1, -1, -1)
     else:
         raise ValueError(f"Unsupported strand: {strand!r}")
-
-    cum = 0
-    for ex in walk:
-        ex_start = int(ex.Start)
-        ex_end = int(ex.End)
-        length = ex_end - ex_start
-        if ex_start <= pos < ex_end:
-            if strand == "+":
-                return cum + (pos - ex_start)
-            return cum + (ex_end - 1 - pos)
-        cum += length
+    for i in rng:
+        s = int(starts[i])
+        e = int(ends[i])
+        if s <= pos < e:
+            return cum + (pos - s) if strand == "+" else cum + (e - 1 - pos)
+        cum += e - s
     return None
+
+
+def _spliced_sequence(
+    chrom: str, starts: np.ndarray, ends: np.ndarray, strand: str, genome: pysam.FastaFile
+) -> str:
+    """Spliced transcript sequence (5'→3'); exons given sorted ascending by start."""
+    parts = [genome.fetch(chrom, int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
+    seq = "".join(parts).upper()
+    return _reverse_complement(seq) if strand == "-" else seq
+
+
+def _tx_to_genomic_intervals(
+    tx_start: int, tx_end: int, chrom: str, starts: np.ndarray, ends: np.ndarray, strand: str
+) -> list[tuple[str, int, int, str]]:
+    """Map [tx_start, tx_end) in transcript coords back to genomic intervals."""
+    rng = range(len(starts)) if strand == "+" else range(len(starts) - 1, -1, -1)
+    out: list[tuple[str, int, int, str]] = []
+    cum = 0
+    for i in rng:
+        s = int(starts[i])
+        e = int(ends[i])
+        ex_tx_end = cum + (e - s)
+        ov_s = max(cum, tx_start)
+        ov_e = min(ex_tx_end, tx_end)
+        if ov_e > ov_s:
+            if strand == "+":
+                out.append((chrom, s + (ov_s - cum), s + (ov_e - cum), strand))
+            else:
+                out.append((chrom, e - (ov_e - cum), e - (ov_s - cum), strand))
+        cum = ex_tx_end
+    out.sort(key=lambda x: x[1])
+    return out
 
 
 def _walk_to_stop(seq: str, start_tx: int) -> tuple[int, bool]:
@@ -116,11 +153,8 @@ def _walk_to_stop(seq: str, start_tx: int) -> tuple[int, bool]:
     return n, False
 
 
-def _introns_of(exons: pd.DataFrame) -> list[tuple[int, int]]:
-    """Genomic introns (gaps between consecutive exons), sorted by start."""
-    s = exons.sort_values("Start")
-    starts = s["Start"].to_numpy()
-    ends = s["End"].to_numpy()
+def _introns_of(starts: np.ndarray, ends: np.ndarray) -> list[tuple[int, int]]:
+    """Genomic introns (gaps between consecutive exons), exons sorted ascending."""
     return [
         (int(ends[i]), int(starts[i + 1]))
         for i in range(len(starts) - 1)
@@ -129,7 +163,11 @@ def _introns_of(exons: pd.DataFrame) -> list[tuple[int, int]]:
 
 
 def _intron_retained_in_cds(
-    iso_exons: pd.DataFrame, parent_introns: list[tuple[int, int]], cds_lo: int, cds_hi: int
+    starts: np.ndarray,
+    ends: np.ndarray,
+    parent_introns: list[tuple[int, int]],
+    cds_lo: int,
+    cds_hi: int,
 ) -> bool:
     """True if a parent intron inside the CDS span is engulfed by one iso exon.
 
@@ -140,12 +178,11 @@ def _intron_retained_in_cds(
     """
     if not parent_introns:
         return False
-    iso = iso_exons[["Start", "End"]].to_numpy()
     for js, je in parent_introns:
         if js < cds_lo or je > cds_hi:
             continue
-        for es, ee in iso:
-            if int(es) <= js and je <= int(ee):
+        for s, e in zip(starts, ends, strict=True):
+            if int(s) <= js and je <= int(e):
                 return True
     return False
 
@@ -214,73 +251,77 @@ def resolve(
     if propagated.empty or len(classified) == 0:
         return pd.DataFrame(columns=_COLUMNS)
 
-    iso_df = classified.df
-    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
-    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+    # Per-isoform exon arrays, sorted ascending by start, built once.
+    iso_df = classified.df.sort_values(["transcript_id", "Start"], kind="stable")
+    iso_by_tx: dict[str, tuple[str, str, np.ndarray, np.ndarray]] = {}
+    for tx, g in iso_df.groupby("transcript_id", sort=False):
+        iso_by_tx[tx] = (
+            str(g["Chromosome"].iat[0]),
+            str(g["Strand"].iat[0]),
+            g["Start"].to_numpy(),
+            g["End"].to_numpy(),
+        )
 
+    # Parent start/stop positions, CDS span, and introns, all precomputed once.
     ref_df = reference.df
-    parent_cds_by_tx = {
-        tx: g for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False)
-    }
-    parent_exons_by_tx = {
-        tx: g for tx, g in ref_df[ref_df["Feature"] == "exon"].groupby("transcript_id", sort=False)
-    }
-    parent_introns_by_tx = {tx: _introns_of(g) for tx, g in parent_exons_by_tx.items()}
+    parent_start: dict[str, int] = {}
+    parent_stop: dict[str, int] = {}
+    parent_cds_span: dict[str, tuple[int, int]] = {}
+    for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False):
+        strand = str(g["Strand"].iat[0])
+        smin = int(g["Start"].min())
+        emax = int(g["End"].max())
+        parent_cds_span[tx] = (smin, emax)
+        if strand == "+":
+            parent_start[tx], parent_stop[tx] = smin, emax - 1
+        else:
+            parent_start[tx], parent_stop[tx] = emax - 1, smin
+    parent_introns: dict[str, list[tuple[int, int]]] = {}
+    for tx, g in ref_df[ref_df["Feature"] == "exon"].groupby("transcript_id", sort=False):
+        s = g.sort_values("Start")
+        parent_introns[tx] = _introns_of(s["Start"].to_numpy(), s["End"].to_numpy())
+
+    tx_ids = propagated["transcript_id"].to_numpy()
+    outcomes = propagated["orf_outcome"].astype(str).to_numpy()
+    parents = propagated["parent_tx_id"].astype(str).to_numpy()
 
     own_genome = isinstance(genome_fasta, str | Path)
     genome = pysam.FastaFile(str(genome_fasta)) if own_genome else genome_fasta
     try:
         rows: list[dict] = []
-        for _, prop_row in propagated.iterrows():
-            tx_id = prop_row["transcript_id"]
-            outcome = str(prop_row["orf_outcome"])
-            parent_tx = prop_row["parent_tx_id"]
-
-            if outcome not in _RESOLVABLE_OUTCOMES or parent_tx not in parent_cds_by_tx:
+        for tx_id, outcome, parent_tx in zip(tx_ids, outcomes, parents, strict=True):
+            if outcome not in _RESOLVABLE_OUTCOMES or parent_tx not in parent_start:
                 rows.append(_failed_row(tx_id))
                 continue
 
-            strand = str(iso_strand[tx_id])
-            iso_exons = iso_exons_by_tx[tx_id]
-            parent_cds = parent_cds_by_tx[parent_tx]
-
-            start_pos = _start_codon_pos(parent_cds, strand)
-            start_tx = _genomic_pos_to_tx_coord(start_pos, iso_exons, strand)
+            chrom, strand, starts, ends = iso_by_tx[tx_id]
+            start_tx = _genomic_pos_to_tx_coord(parent_start[parent_tx], starts, ends, strand)
             if start_tx is None:
                 rows.append(_failed_row(tx_id))
                 continue
 
-            seq = _transcript_sequence(iso_exons, strand, genome)
+            seq = _spliced_sequence(chrom, starts, ends, strand, genome)
             stop_tx, found = _walk_to_stop(seq, start_tx)
 
-            sorted_exons = iso_exons.sort_values("Start")
-            exon_lengths = (sorted_exons["End"] - sorted_exons["Start"]).astype(int).tolist()
-            if strand == "-":
-                exon_lengths = exon_lengths[::-1]
+            lengths = (ends - starts).astype(int)
+            exon_lengths = lengths.tolist() if strand == "+" else lengths[::-1].tolist()
             uorf_count, uorf_triggers = _scan_uorfs(
                 seq, start_tx, exon_lengths, ptc_threshold_nt
             )
 
-            chrom = str(iso_exons["Chromosome"].iloc[0])
-            intervals = _transcript_to_genomic_intervals(
-                start_tx, stop_tx, iso_exons, strand, chrom
-            )
+            intervals = _tx_to_genomic_intervals(start_tx, stop_tx, chrom, starts, ends, strand)
             cds_bp = stop_tx - start_tx
             resolved_stop = (
                 _stop_pos_from_intervals(intervals, strand) if intervals else None
             )
 
-            # Where does the parent's stop fall in the iso's transcript?
-            parent_stop_pos = _stop_codon_pos(parent_cds, strand)
-            parent_stop_tx = _genomic_pos_to_tx_coord(parent_stop_pos, iso_exons, strand)
-
-            # Intron retention anywhere in the parent CDS span (independent of
-            # where the resolved stop lands, so an early PTC inside the retained
-            # intron is still labelled as retention).
-            cds_lo = int(parent_cds["Start"].min())
-            cds_hi = int(parent_cds["End"].max())
-            parent_introns = parent_introns_by_tx.get(parent_tx, [])
-            ir = _intron_retained_in_cds(iso_exons, parent_introns, cds_lo, cds_hi)
+            parent_stop_tx = _genomic_pos_to_tx_coord(
+                parent_stop[parent_tx], starts, ends, strand
+            )
+            cds_lo, cds_hi = parent_cds_span[parent_tx]
+            ir = _intron_retained_in_cds(
+                starts, ends, parent_introns.get(parent_tx, []), cds_lo, cds_hi
+            )
 
             status, ptc, frame_ok = _classify(found, stop_tx, parent_stop_tx, ir)
 
