@@ -384,3 +384,76 @@ def test_multiple_isoforms_classified_independently() -> None:
     result = predict(iso, prop)
     assert _row(result, "t1")["nmd_status"] == NMDStatus.ESCAPED.value
     assert _row(result, "t2")["nmd_status"] == NMDStatus.SENSITIVE.value
+
+
+# ---- resolved-ORF NMD (predict_resolved) -------------------------------------
+
+from craft.core.nmd import predict_resolved  # noqa: E402
+
+
+def _res_row(tx_id, status, intervals, cds_bp=300, stop=True):
+    return {
+        "transcript_id": tx_id,
+        "resolved_orf_status": status,
+        "resolved_stop_pos": None,
+        "resolved_cds_bp": cds_bp,
+        "resolved_aa_length": cds_bp // 3,
+        "resolved_cds_intervals": intervals,
+        "ptc_introduced": status != "intact",
+        "intron_retained_in_cds": False,
+        "frame_consistent": status == "intact",
+        "stop_in_transcript": stop,
+        "uorf_count": 0,
+        "uorf_triggers_nmd": False,
+    }
+
+
+def test_predict_resolved_ptc_far_from_last_junction_is_sensitive() -> None:
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 200, "+", "t1"),
+            ("chr1", 300, 400, "+", "t1"),
+            ("chr1", 500, 600, "+", "t1"),
+        ]
+    )
+    # Resolved stop in exon 2 ending at 350 -> last coding base 349, 51 nt from
+    # the exon2/exon3 junction -> NMD-sensitive on the resolved stop.
+    res = pd.DataFrame(
+        [_res_row("t1", "ptc_premature", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])]
+    )
+    out = predict_resolved(iso, res)
+    r = _row(out, "t1")
+    assert r["nmd_status_resolved"] == NMDStatus.SENSITIVE.value
+    assert r["nmd_rule_resolved"] == "ptc_50nt_rule"
+    assert r["nmd_confidence_resolved"] == ORFConfidence.MEDIUM.value
+
+
+def test_predict_resolved_intact_stop_in_last_exon_escapes_high_conf() -> None:
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 200, "+", "t1"),
+            ("chr1", 300, 400, "+", "t1"),
+            ("chr1", 500, 600, "+", "t1"),
+        ]
+    )
+    res = pd.DataFrame(
+        [
+            _res_row(
+                "t1",
+                "intact",
+                [("chr1", 150, 200, "+"), ("chr1", 300, 400, "+"), ("chr1", 500, 560, "+")],
+            )
+        ]
+    )
+    out = predict_resolved(iso, res)
+    r = _row(out, "t1")
+    assert r["nmd_status_resolved"] == NMDStatus.ESCAPED.value
+    assert r["nmd_rule_resolved"] == "stop_in_last_exon"
+    assert r["nmd_confidence_resolved"] == ORFConfidence.HIGH.value
+
+
+def test_predict_resolved_no_stop_is_not_applicable() -> None:
+    iso = _iso_pr([("chr1", 100, 200, "+", "t1"), ("chr1", 300, 400, "+", "t1")])
+    res = pd.DataFrame([_res_row("t1", "no_stop_in_read", [], cds_bp=0, stop=False)])
+    out = predict_resolved(iso, res)
+    assert _row(out, "t1")["nmd_status_resolved"] == NMDStatus.NOT_APPLICABLE.value

@@ -69,18 +69,31 @@ def _exon_overlap_bp(iso_exons: pr.PyRanges, ref_exons: pr.PyRanges) -> pd.DataF
     return total[["iso_tx", "ref_tx", "overlap_bp"]]
 
 
-def _select_parent(jx_counts: pd.DataFrame, overlap_bp: pd.DataFrame) -> pd.DataFrame:
-    """Per iso_tx, pick the ref_tx with max shared junctions, tiebreak by overlap_bp."""
+def _select_parent(
+    jx_counts: pd.DataFrame,
+    overlap_bp: pd.DataFrame,
+    cds_tx_ids: set[str] | None = None,
+    prefer_coding_parent: bool = False,
+) -> pd.DataFrame:
+    """Per iso_tx, pick the ref_tx with max shared junctions, tiebreak by overlap_bp.
+
+    With ``prefer_coding_parent=True``, a CDS-bearing reference transcript is
+    preferred over a non-coding one as the lowest-priority tiebreaker (only when
+    shared junctions and exon overlap are equal). The default is off, so the
+    parent selection is byte-identical to v1.4.
+    """
     if jx_counts.empty and overlap_bp.empty:
         return pd.DataFrame(columns=["iso_tx", "ref_tx", "shared_jx", "overlap_bp"])
     scored = jx_counts.merge(overlap_bp, on=["iso_tx", "ref_tx"], how="outer")
     scored["shared_jx"] = scored["shared_jx"].fillna(0).astype("int64")
     scored["overlap_bp"] = scored["overlap_bp"].fillna(0).astype("int64")
-    scored = scored.sort_values(
-        ["iso_tx", "shared_jx", "overlap_bp"],
-        ascending=[True, False, False],
-        kind="stable",
-    )
+    sort_cols = ["iso_tx", "shared_jx", "overlap_bp"]
+    ascending = [True, False, False]
+    if prefer_coding_parent and cds_tx_ids:
+        scored["ref_has_cds"] = scored["ref_tx"].isin(cds_tx_ids).astype("int64")
+        sort_cols.append("ref_has_cds")
+        ascending.append(False)
+    scored = scored.sort_values(sort_cols, ascending=ascending, kind="stable")
     return scored.groupby("iso_tx", as_index=False).first()
 
 
@@ -119,6 +132,8 @@ def classify(
     isoforms: pr.PyRanges,
     reference: pr.PyRanges,
     tolerance: int = 50,
+    cds_tx_ids: set[str] | None = None,
+    prefer_coding_parent: bool = False,
 ) -> pr.PyRanges:
     """Classify each isoform's completeness vs its best-matching reference transcript.
 
@@ -143,6 +158,8 @@ def classify(
     parents = _select_parent(
         _shared_junction_counts(splice_junctions(isoforms), splice_junctions(reference)),
         _exon_overlap_bp(isoforms, reference),
+        cds_tx_ids=cds_tx_ids,
+        prefer_coding_parent=prefer_coding_parent,
     )
 
     parent_lookup = parents.set_index("iso_tx") if not parents.empty else parents
@@ -157,6 +174,7 @@ def classify(
                     "parent_tx_id": "",
                     "shared_junctions": 0,
                     "parent_overlap_bp": 0,
+                    "has_cds_bearing_parent": False,
                 }
             )
             continue
@@ -178,6 +196,7 @@ def classify(
                 "parent_tx_id": ref_tx,
                 "shared_junctions": int(match["shared_jx"]),
                 "parent_overlap_bp": int(match["overlap_bp"]),
+                "has_cds_bearing_parent": bool(cds_tx_ids and ref_tx in cds_tx_ids),
             }
         )
 

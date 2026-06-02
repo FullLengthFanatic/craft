@@ -399,3 +399,76 @@ def test_polya_signal_motif_empty_when_utr_lacks_signal(synthetic_genome: Path) 
     result = annotate(iso, prop, ref, genome_fasta=synthetic_genome)
     row = result.iloc[0]
     assert row["polya_signal_motif"] == ""
+
+
+# ---- resolved 3'UTR + 5'UTR (annotate_resolved) ------------------------------
+
+from craft.core.utr3 import _utr5_length, annotate_resolved  # noqa: E402
+
+
+def _classified(iso_records: list[tuple], parent_tx: str, tx_id: str = "t1") -> pr.PyRanges:
+    cols = ["Chromosome", "Start", "End", "Strand", "transcript_id", "parent_tx_id"]
+    rows = [(c, s, e, st, tx_id, parent_tx) for (c, s, e, st) in iso_records]
+    return pr.PyRanges(pd.DataFrame(rows, columns=cols))
+
+
+def _res_df(tx_id, status, intervals, stop=True):
+    return pd.DataFrame(
+        [
+            {
+                "transcript_id": tx_id,
+                "resolved_orf_status": status,
+                "resolved_stop_pos": None,
+                "resolved_cds_bp": 100,
+                "resolved_aa_length": 33,
+                "resolved_cds_intervals": intervals,
+                "ptc_introduced": False,
+                "intron_retained_in_cds": False,
+                "frame_consistent": True,
+                "stop_in_transcript": stop,
+                "uorf_count": 0,
+                "uorf_triggers_nmd": False,
+            }
+        ]
+    )
+
+
+def test_utr5_length_plus_and_minus_strand() -> None:
+    exons = pd.DataFrame(
+        {"Start": [100, 300], "End": [200, 400]},
+    )
+    # + strand: bases upstream of start 150 -> exon1 [100,150) = 50.
+    assert _utr5_length(exons, 150, "+") == 50
+    # - strand: 5' is high coord; start 350 -> bases strictly above it (351..399) = 49.
+    assert _utr5_length(exons, 350, "-") == 49
+
+
+def test_annotate_resolved_full_length_has_zero_deltas() -> None:
+    iso = [("chr1", 100, 200, "+"), ("chr1", 300, 400, "+")]
+    classified = _classified(iso, "t_ref")
+    ref = _reference(
+        exon_records=[("chr1", 100, 200, "+", "t_ref"), ("chr1", 300, 400, "+", "t_ref")],
+        cds_records=[("chr1", 150, 200, "+", "t_ref"), ("chr1", 300, 350, "+", "t_ref")],
+    )
+    res = _res_df("t1", "intact", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])
+    out = annotate_resolved(classified, res, ref)
+    row = out[out["transcript_id"] == "t1"].iloc[0]
+    assert row["iso_utr5_length_nt"] == 50
+    assert row["parent_utr5_length_nt"] == 50
+    assert row["utr5_length_delta_nt"] == 0
+    assert row["iso_utr3_length_resolved_nt"] == 50  # exon2 [350,400)
+    assert not row["long_utr3_triggers_nmd"]
+
+
+def test_annotate_resolved_long_utr3_triggers_flag() -> None:
+    iso = [("chr1", 100, 200, "+"), ("chr1", 300, 2000, "+")]
+    classified = _classified(iso, "t_ref")
+    ref = _reference(
+        exon_records=[("chr1", 100, 200, "+", "t_ref"), ("chr1", 300, 2000, "+", "t_ref")],
+        cds_records=[("chr1", 150, 200, "+", "t_ref"), ("chr1", 300, 350, "+", "t_ref")],
+    )
+    res = _res_df("t1", "intact", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])
+    out = annotate_resolved(classified, res, ref, long_utr3_nt=1000)
+    row = out[out["transcript_id"] == "t1"].iloc[0]
+    assert row["iso_utr3_length_resolved_nt"] == 1650
+    assert row["long_utr3_triggers_nmd"]

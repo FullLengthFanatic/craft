@@ -17,7 +17,9 @@ from craft.report.plots import bar_chart
 _SUMMARY_FIELDS = (
     ("completeness", "Completeness"),
     ("orf_outcome", "ORF outcome"),
-    ("nmd_status", "NMD status"),
+    ("resolved_orf_status", "Resolved ORF status"),
+    ("nmd_status", "NMD status (geometric)"),
+    ("nmd_status_resolved", "NMD status (resolved)"),
     ("orf_confidence", "ORF confidence"),
 )
 

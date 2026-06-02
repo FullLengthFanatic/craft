@@ -79,6 +79,28 @@ def _parent_stop_pos(cds_df: pd.DataFrame, strand: str) -> int:
     raise ValueError(f"Unsupported strand: {strand!r}")
 
 
+def _start_pos(cds_df: pd.DataFrame, strand: str) -> int:
+    """Genomic 0-based position of the start codon's first base."""
+    if strand == "+":
+        return int(cds_df["Start"].min())
+    if strand == "-":
+        return int(cds_df["End"].max()) - 1
+    raise ValueError(f"Unsupported strand: {strand!r}")
+
+
+def _utr5_length(exons: pd.DataFrame, start_pos: int, strand: str) -> int:
+    """Total mRNA bp upstream of the start codon (in transcript order)."""
+    starts = exons["Start"].to_numpy()
+    ends = exons["End"].to_numpy()
+    if strand == "+":
+        contrib = np.maximum(0, np.minimum(ends, start_pos) - starts)
+    elif strand == "-":
+        contrib = np.maximum(0, ends - np.maximum(starts, start_pos + 1))
+    else:
+        raise ValueError(f"Unsupported strand: {strand!r}")
+    return int(contrib.sum())
+
+
 def _iso_stop_pos(intervals: list[tuple], strand: str) -> int:
     if strand == "+":
         return max(end - 1 for _, _, end, _ in intervals)
@@ -308,3 +330,117 @@ def annotate(
     finally:
         if genome is not None:
             genome.close()
+
+
+# Statuses (from craft.core.orf.resolve) that carry a real resolved stop.
+_RESOLVED_WITH_STOP = frozenset(
+    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+)
+
+LONG_UTR3_NT = 1000
+
+
+def annotate_resolved(
+    classified: pr.PyRanges,
+    resolved: pd.DataFrame,
+    reference: pr.PyRanges,
+    long_utr3_nt: int = LONG_UTR3_NT,
+) -> pd.DataFrame:
+    """UTR consequences from the sequence-resolved ORF, plus 5'UTR metrics.
+
+    Resolved 3'UTR length is measured from the true (resolved) stop; 5'UTR length
+    is measured upstream of the start codon (symmetric to the 3'UTR delta). The
+    geometric ``utr3_*`` columns from :func:`annotate` are left untouched.
+
+    Args:
+        classified: PyRanges of isoform exons (``transcript_id``, ``Strand``).
+        resolved: DataFrame from :func:`craft.core.orf.resolve.resolve`.
+        reference: Reference PyRanges with a ``Feature`` column (exon / CDS rows).
+        long_utr3_nt: 3'UTR length above which ``long_utr3_triggers_nmd`` is set.
+
+    Returns:
+        DataFrame with ``transcript_id`` plus ``iso_utr3_length_resolved_nt``,
+        ``utr3_length_delta_resolved_nt``, ``utr3_length_delta_pct_resolved``,
+        ``long_utr3_triggers_nmd``, ``iso_utr5_length_nt``,
+        ``parent_utr5_length_nt``, ``utr5_length_delta_nt``,
+        ``utr5_length_delta_pct``.
+    """
+    cols = [
+        "transcript_id",
+        "iso_utr3_length_resolved_nt",
+        "utr3_length_delta_resolved_nt",
+        "utr3_length_delta_pct_resolved",
+        "long_utr3_triggers_nmd",
+        "iso_utr5_length_nt",
+        "parent_utr5_length_nt",
+        "utr5_length_delta_nt",
+        "utr5_length_delta_pct",
+    ]
+    if resolved.empty or len(classified) == 0:
+        return pd.DataFrame(columns=cols)
+
+    iso_df = classified.df
+    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
+    iso_parent = iso_df.groupby("transcript_id")["parent_tx_id"].first().to_dict()
+    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+
+    ref_df = reference.df
+    parent_exons_by_tx = {
+        tx: g for tx, g in ref_df[ref_df["Feature"] == "exon"].groupby("transcript_id", sort=False)
+    }
+    parent_cds_by_tx = {
+        tx: g for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False)
+    }
+
+    rows: list[dict] = []
+    for _, res_row in resolved.iterrows():
+        tx_id = res_row["transcript_id"]
+        strand = str(iso_strand.get(tx_id, "+"))
+        iso_exons = iso_exons_by_tx.get(tx_id)
+        parent_tx = iso_parent.get(tx_id, "")
+        parent_cds = parent_cds_by_tx.get(parent_tx)
+        parent_exons = parent_exons_by_tx.get(parent_tx)
+
+        row = dict.fromkeys(cols)
+        row["transcript_id"] = tx_id
+        row["long_utr3_triggers_nmd"] = False
+
+        # Resolved 3'UTR (only when a real stop was found).
+        has_stop = (
+            str(res_row["resolved_orf_status"]) in _RESOLVED_WITH_STOP
+            and bool(res_row["stop_in_transcript"])
+            and res_row["resolved_cds_intervals"]
+        )
+        if has_stop and iso_exons is not None:
+            iso_stop = _iso_stop_pos(res_row["resolved_cds_intervals"], strand)
+            iso_utr3 = _utr3_length(iso_exons, iso_stop, strand)
+            row["iso_utr3_length_resolved_nt"] = iso_utr3
+            row["long_utr3_triggers_nmd"] = iso_utr3 > long_utr3_nt
+            if parent_cds is not None and parent_exons is not None:
+                parent_stop = _parent_stop_pos(parent_cds, strand)
+                parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
+                row["utr3_length_delta_resolved_nt"] = iso_utr3 - parent_utr3
+                if parent_utr3 > 0:
+                    row["utr3_length_delta_pct_resolved"] = (
+                        (iso_utr3 - parent_utr3) / parent_utr3 * 100.0
+                    )
+
+        # 5'UTR (only when the start codon is observed in the isoform).
+        if (
+            parent_cds is not None
+            and iso_exons is not None
+            and str(res_row["resolved_orf_status"]) != "resolution_failed"
+        ):
+            start_pos = _start_pos(parent_cds, strand)
+            iso_utr5 = _utr5_length(iso_exons, start_pos, strand)
+            row["iso_utr5_length_nt"] = iso_utr5
+            if parent_exons is not None:
+                parent_utr5 = _utr5_length(parent_exons, start_pos, strand)
+                row["parent_utr5_length_nt"] = parent_utr5
+                row["utr5_length_delta_nt"] = iso_utr5 - parent_utr5
+                if parent_utr5 > 0:
+                    row["utr5_length_delta_pct"] = (
+                        (iso_utr5 - parent_utr5) / parent_utr5 * 100.0
+                    )
+        rows.append(row)
+    return pd.DataFrame(rows, columns=cols)

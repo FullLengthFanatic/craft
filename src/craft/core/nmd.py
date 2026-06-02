@@ -191,3 +191,94 @@ def predict(
             }
         )
     return pd.DataFrame(rows, columns=cols)
+
+
+# Resolved-ORF statuses (from craft.core.orf.resolve) for which NMD can be evaluated:
+# a real in-frame stop was found in the isoform's own sequence.
+_RESOLVED_NMD_APPLICABLE = frozenset(
+    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+)
+
+
+def predict_resolved(
+    classified: pr.PyRanges,
+    resolved: pd.DataFrame,
+    ptc_threshold_nt: int = PTC_THRESHOLD_NT,
+    start_proximal_nt: int = START_PROXIMAL_NT,
+    long_last_exon_nt: int = LONG_LAST_EXON_NT,
+) -> pd.DataFrame:
+    """Predict NMD from the sequence-resolved stop instead of the geometric one.
+
+    Mirrors :func:`predict` but reads the true stop position from
+    :func:`craft.core.orf.resolve.resolve` output. Emits the parallel
+    ``nmd_status_resolved`` / ``nmd_rule_resolved`` / ``nmd_confidence_resolved``
+    columns and leaves the geometric columns untouched.
+
+    Args:
+        classified: PyRanges of isoform exons (``transcript_id``, ``Strand``).
+        resolved: DataFrame from :func:`craft.core.orf.resolve.resolve`.
+        ptc_threshold_nt: 50nt PTC rule threshold (mRNA distance to last junction).
+        start_proximal_nt: start-proximal escape window.
+        long_last_exon_nt: long-last-exon escape threshold.
+
+    Returns:
+        DataFrame with ``transcript_id``, ``nmd_status_resolved``,
+        ``nmd_rule_resolved``, ``nmd_confidence_resolved``.
+    """
+    cols = ["transcript_id", "nmd_status_resolved", "nmd_rule_resolved", "nmd_confidence_resolved"]
+    if resolved.empty or len(classified) == 0:
+        return pd.DataFrame(columns=cols)
+
+    iso_df = classified.df
+    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
+    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+
+    rows: list[dict] = []
+    for _, res_row in resolved.iterrows():
+        tx_id = res_row["transcript_id"]
+        status_label = str(res_row["resolved_orf_status"])
+        intervals = res_row["resolved_cds_intervals"]
+        applicable = (
+            status_label in _RESOLVED_NMD_APPLICABLE
+            and bool(res_row["stop_in_transcript"])
+            and intervals
+        )
+        if not applicable:
+            rows.append(
+                {
+                    "transcript_id": tx_id,
+                    "nmd_status_resolved": NMDStatus.NOT_APPLICABLE.value,
+                    "nmd_rule_resolved": "",
+                    "nmd_confidence_resolved": ORFConfidence.NONE.value,
+                }
+            )
+            continue
+
+        strand = str(iso_strand[tx_id])
+        iso_exons = iso_exons_by_tx[tx_id]
+        stop_pos = _stop_codon_genome(intervals, strand)
+        distance, in_last = _distance_stop_to_last_junction(stop_pos, iso_exons, strand)
+        last_exon_len = _last_exon_length(iso_exons, strand)
+        cds_bp = int(res_row["resolved_cds_bp"])
+
+        if in_last:
+            status, rule = NMDStatus.ESCAPED, "stop_in_last_exon"
+        elif distance <= ptc_threshold_nt:
+            status, rule = NMDStatus.ESCAPED, "within_50nt_of_last_junction"
+        elif cds_bp < start_proximal_nt:
+            status, rule = NMDStatus.ESCAPED, "start_proximal"
+        elif last_exon_len > long_last_exon_nt:
+            status, rule = NMDStatus.ESCAPED, "long_last_exon"
+        else:
+            status, rule = NMDStatus.SENSITIVE, "ptc_50nt_rule"
+
+        confidence = ORFConfidence.HIGH if status_label == "intact" else ORFConfidence.MEDIUM
+        rows.append(
+            {
+                "transcript_id": tx_id,
+                "nmd_status_resolved": status.value,
+                "nmd_rule_resolved": rule,
+                "nmd_confidence_resolved": confidence.value,
+            }
+        )
+    return pd.DataFrame(rows, columns=cols)

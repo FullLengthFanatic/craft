@@ -39,6 +39,8 @@ class ORFConfidence(str, Enum):
 def score(
     completeness: Completeness | str,
     orf_outcome: ORFOutcome | str,
+    high_threshold: float = HIGH_THRESHOLD,
+    medium_threshold: float = MEDIUM_THRESHOLD,
 ) -> tuple[ORFConfidence, float]:
     """Compute a categorical and numeric (0-1) ORF confidence.
 
@@ -65,9 +67,9 @@ def score(
 
     value = _BASE_BY_OUTCOME[outcome] * _COMPLETENESS_FACTOR[comp]
 
-    if value >= HIGH_THRESHOLD:
+    if value >= high_threshold:
         category = ORFConfidence.HIGH
-    elif value >= MEDIUM_THRESHOLD:
+    elif value >= medium_threshold:
         category = ORFConfidence.MEDIUM
     else:
         category = ORFConfidence.LOW

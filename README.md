@@ -72,17 +72,21 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 ## Outputs
 
-Four files in `output-dir/`:
+| File                          | Description                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `per_isoform.tsv`             | per-iso annotation table, 62 columns, list columns JSON-encoded             |
+| `per_isoform.json`            | same content as records; list columns stay as lists                         |
+| `report.html`                 | self-contained interactive report (summary cards + plotly + table)          |
+| `annotated.h5ad`              | AnnData with iso annotations in `var`, per-cell counts in `X` (if given)    |
+| `per_celltype_consequence.tsv`| with `--counts --group-by`: consequence fractions per cell group            |
 
-| File                 | Description                                                              |
-| -------------------- | ------------------------------------------------------------------------ |
-| `per_isoform.tsv`    | per-iso annotation table, 30 columns, list columns JSON-encoded          |
-| `per_isoform.json`   | same content as records; list columns stay as lists                      |
-| `report.html`        | self-contained interactive report (summary cards + plotly + table)       |
-| `annotated.h5ad`     | AnnData with iso annotations in `var`, per-cell counts in `X` (if given) |
+Every column is documented in [`docs/features.md`](docs/features.md).
 
-Every column is documented in
-[`docs/methods.md`](docs/methods.md#output-schema).
+CRAFT reports each isoform's ORF two ways: the original **geometric** projection
+(`orf_outcome`, `nmd_status`, ...) and a v1.5 **sequence-resolved** view
+(`resolved_orf_status`, `nmd_status_resolved`, `intron_retained_in_cds`, ...)
+that reads the spliced sequence to find the real stop. Prefer the resolved
+columns for functional-consequence calls.
 
 ## Filter recipes
 
@@ -124,10 +128,12 @@ For the full algorithm, threshold defaults, and design rationale, see
 
 - It does not do structural QC. The iso GTF is assumed to be post-QC (e.g.,
   pigeon, SQANTI3-curated). CRAFT describes what's there, it doesn't filter.
-- It does not detect intron retention inside the CDS yet (v1.5).
-- It does not do single-cell isoform-aware cell-type calling. That's a planned
-  separate tool that consumes CRAFT's `annotated.h5ad`.
+- It does not call cell types. With `--group-by` it summarises functional
+  consequences per existing cell grouping, but clustering/cell-typing is upstream.
 - It does not harmonise chromosome naming. All three inputs must agree.
+
+As of v1.5 it does detect intron retention inside the CDS and the resulting
+premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 
 ## Status
 

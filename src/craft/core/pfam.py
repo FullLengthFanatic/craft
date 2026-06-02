@@ -165,7 +165,12 @@ def scan(
             tx_id = prop_row["transcript_id"]
             parent_tx = prop_row.get("parent_tx_id", "") or ""
 
-            iso_intervals = prop_row.get("propagated_cds_intervals") or []
+            # Prefer the sequence-resolved CDS (frameshift- and intron-retention-
+            # aware) when available; fall back to the geometric propagated CDS,
+            # then the de novo ORF.
+            iso_intervals = prop_row.get("resolved_cds_intervals") or []
+            if not iso_intervals:
+                iso_intervals = prop_row.get("propagated_cds_intervals") or []
             if not iso_intervals:
                 iso_intervals = prop_row.get("denovo_cds_intervals") or []
 

@@ -125,6 +125,41 @@ The counts file's `var_names` must match the iso GTF's `transcript_id`s.
 Isoforms in the counts that aren't in the iso GTF are dropped; isoforms in
 the iso GTF that aren't in the counts get zero-filled count columns.
 
+### Per-cell-type consequence fractions
+
+Add `--group-by OBS_COLUMN` (with `--counts`) to summarise functional
+consequences per cell group:
+
+```bash
+craft annotate \
+    --isoforms  iso.gtf \
+    --reference reference.gtf \
+    --genome    genome.fa \
+    --counts    counts.h5ad \
+    --group-by  cell_type \
+    --output-dir out/
+```
+
+`OBS_COLUMN` is any column in the counts `obs` (for example `cell_type`,
+`leiden`, `cluster`). The output `per_celltype_consequence.tsv` has one row per
+group with molecule-weighted fractions: the fraction of detected isoform
+molecules in the group that are NMD-sensitive (resolved), carry a premature
+stop, retain a CDS intron, are truncated, end at an alternative 3' site, or have
+a lost Pfam domain. A highly expressed isoform contributes in proportion to its
+read support. The same table is stored in `annotated.h5ad` under
+`uns['celltype_consequences']`. CRAFT does not cluster or call cell types; supply
+a grouping that already exists in `obs`.
+
+### Sequence-resolved vs geometric columns
+
+Every run writes two ORF/NMD views. The geometric columns (`orf_outcome`,
+`nmd_status`, `utr3_length_delta_nt`) come from projecting the parent CDS
+coordinates. The resolved columns (`resolved_orf_status`, `nmd_status_resolved`,
+`intron_retained_in_cds`, the `*_resolved` UTR columns) come from translating the
+isoform's own spliced sequence and finding the real stop. Prefer the resolved
+columns for functional-consequence calls; see
+[`features.md`](features.md#the-one-thing-to-understand-first-geometric-vs-resolved).
+
 ### With Pfam domain analysis
 
 ```bash
@@ -419,45 +454,39 @@ file locally before opening.
 
 ## Tuning parameters
 
-The CLI doesn't yet expose every tunable, but the public Python API does.
-Drop into a notebook and call `run_annotate` directly for parameter sweeps.
+Every tunable below is a CLI flag (since v1.5); the Python API takes the same
+keywords if you prefer a notebook.
 
-### Completeness tolerance (default 50 bp)
+### Completeness tolerance (`--tolerance`, default 50 bp)
 
 The slack on each end before a position is called "truncated". Increase for
 ONT data (TSS uncertainty is larger), decrease if you trust your iso 5'/3'
 ends precisely (e.g., post-CAGE).
 
-```python
-from craft.core.completeness import classify
-classified = classify(isoforms, reference_exons, tolerance=100)
-```
-
-### Minimum de-novo ORF length (default 50 aa)
+### Minimum de-novo ORF length (`--min-orf-aa`, default 50 aa)
 
 Above the noise threshold for random ATG-Stop windows. Lower (e.g., 20 aa)
 if you care about smORFs.
 
-```python
-from craft.core.orf.denovo import predict
-denovo = predict(orphan_isoforms, genome_fasta, min_orf_aa=20)
+### NMD rule thresholds (`--ptc-threshold-nt` 50, `--start-proximal-nt` 150, `--long-last-exon-nt` 400)
+
+```bash
+craft annotate ... --ptc-threshold-nt 55   # some labs use 55 instead of 50
 ```
 
-### NMD rule thresholds (defaults 50 nt / 150 nt / 400 nt)
+These drive both the geometric and the resolved NMD calls. `--ptc-threshold-nt`
+also sets the uORF-triggered-NMD window.
 
-```python
-from craft.core.nmd import predict
-nmd = predict(
-    classified, propagated,
-    ptc_threshold_nt=55,         # some labs use 55 instead of 50
-    start_proximal_nt=150,
-    long_last_exon_nt=400,
-)
-```
+### ORF confidence and long-3'UTR (`--orf-high-confidence` 0.85, `--orf-medium-confidence` 0.5, `--long-utr3-nt` 1000)
 
-If you want to expose these through the CLI for a particular project, add
-them in `src/craft/cli.py` as `@click.option` decorators and pass through
-to `run_annotate`.
+`--long-utr3-nt` is the resolved 3'UTR length above which `long_utr3_triggers_nmd`
+is set.
+
+### Parent selection (`--prefer-coding-parent`, default off)
+
+When two reference transcripts tie on shared junctions and exon overlap, this
+prefers the CDS-bearing one. Off by default so parent assignment, and therefore
+every downstream column, stays reproducible across runs.
 
 ---
 

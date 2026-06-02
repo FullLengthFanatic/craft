@@ -864,28 +864,48 @@ care about uORFs explicitly.
 
 ---
 
-## Known limitations (v1)
+## Sequence-level ORF resolution (v1.5)
 
-The following are deferred to v1.5 or later. None blocks the methods
-paper or normal use.
+The geometric propagation above never reads the spliced sequence, so it cannot
+see a frameshift, an exon-skip premature stop, or an intron retained inside the
+CDS. v1.5 adds a sequence-level pass (`src/craft/core/orf/resolve.py`) that runs
+alongside the geometric one and writes a parallel set of `resolved_*` columns;
+the geometric columns are unchanged.
 
-- **Intron retention inside CDS not flagged.** Treated as
-  `PROPAGATED_INTACT` if all parent CDS bp are present in iso exons.
-- **No explicit frame tracking through alt splice sites.** Frameshift
-  cases land in `DISRUPTED` without a predicted premature stop position.
+For every isoform whose parent start codon is observed, CRAFT projects the
+parent start into the isoform's transcript coordinates, builds the isoform's own
+spliced sequence, and walks it in 3-nt codons to the first in-frame stop. The
+resulting stop drives a resolved NMD call (`nmd_status_resolved`) and a resolved
+3'UTR length. Intron retention inside the CDS is detected by engulfment: a parent
+intron in the CDS span that the isoform carries as continuous exonic sequence
+(this does not misfire on exon skips, which also lower the junction count). The
+resolved status is one of `intact`, `ptc_premature`, `ptc_intron_retained`,
+`cds_extension`, `no_stop_in_read`, `resolution_failed`. uORF detection and a
+long-3'UTR flag are emitted as advisory NMD branches.
+
+5'UTR length deltas are computed symmetrically to the 3'UTR. With `--counts` and
+`--group-by`, CRAFT aggregates per-isoform consequences into molecule-weighted
+fractions per cell group (`per_celltype_consequence.tsv`). Every column is
+documented in [`features.md`](features.md).
+
+## Known limitations
+
 - **Pfam scan uses hmmsearch (slow).** Switch to hmmscan against a
-  pressed database planned for v1.5.
-- **No per-gene HTML track view.** Reports v1.5 will add side-by-side
-  exon/CDS/UTR views for all isoforms of a gene.
-- **No 5' UTR analysis.** Symmetric work to utr3 but rarely asked for in
-  long-read data because 5' truncation rates are high; deferred.
-- **Single-cell counts wired but not used in analysis.** The h5ad gets
-  cell-level counts when `--counts` is supplied, but the analysis itself
-  doesn't yet do cell-type-specific isoform calls. That's tool #3 in the
-  original gap analysis, planned as a separate project.
+  pressed database is still planned.
+- **No per-gene HTML track view.** Side-by-side exon/CDS/UTR views for all
+  isoforms of a gene are still planned.
+- **uORF and long-3'UTR NMD are advisory.** They are reported as separate flags,
+  not folded into `nmd_status_resolved`, because 5' ends are frequently truncated
+  in long-read data and these branches are noisier than the EJC rule.
 - **Non-canonical poly(A) signals not scanned.** Eleven canonical
   variants are listed in `POLYA_SIGNALS`. Cell-type-specific or
   organism-specific extensions can be added by editing that tuple.
 - **Chromosome name harmonisation not done.** All three inputs must agree
   on naming (`chr1` vs `1`). pyranges raises if the FASTA is missing a
   chromosome the GTF references.
+
+Now implemented (were deferred in v1): intron retention inside the CDS
+(`intron_retained_in_cds`), frame tracking to the real premature stop
+(`resolved_orf_status`, `resolved_stop_pos`), 5'UTR analysis
+(`iso_utr5_length_nt` and deltas), and cell-type-specific consequence
+aggregation (`per_celltype_consequence.tsv`).

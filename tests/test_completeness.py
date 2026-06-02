@@ -241,3 +241,29 @@ def test_emits_per_isoform_metadata_columns() -> None:
     row = result[result["transcript_id"] == "t1"].iloc[0]
     assert int(row["shared_junctions"]) == 2
     assert int(row["parent_overlap_bp"]) > 0
+
+
+def test_coding_aware_parent_tiebreak_prefers_cds_bearing() -> None:
+    # Two reference transcripts with identical structure tie on shared junctions
+    # and exon overlap; only t_cds carries a CDS.
+    ref = _exons(
+        [
+            ("chr1", 100, 200, "+", "t_cds"),
+            ("chr1", 300, 400, "+", "t_cds"),
+            ("chr1", 100, 200, "+", "t_noncds"),
+            ("chr1", 300, 400, "+", "t_noncds"),
+        ]
+    )
+    iso = _exons([("chr1", 100, 200, "+", "t1"), ("chr1", 300, 400, "+", "t1")])
+    result = classify(iso, ref, cds_tx_ids={"t_cds"}, prefer_coding_parent=True)
+    assert _parent_of(result, "t1") == "t_cds"
+    row = result.df[result.df["transcript_id"] == "t1"].iloc[0]
+    assert bool(row["has_cds_bearing_parent"])
+
+
+def test_has_cds_bearing_parent_false_without_cds_set() -> None:
+    ref = _exons([("chr1", 100, 200, "+", "t_ref"), ("chr1", 300, 400, "+", "t_ref")])
+    iso = _exons([("chr1", 100, 200, "+", "t1"), ("chr1", 300, 400, "+", "t1")])
+    result = classify(iso, ref)
+    row = result.df[result.df["transcript_id"] == "t1"].iloc[0]
+    assert not bool(row["has_cds_bearing_parent"])

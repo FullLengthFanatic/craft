@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-06-02
+
+Sequence-aware functional consequences. All additions are additive: the original
+39 `per_isoform` columns keep identical values (verified byte/float-identical
+against the chr22 `craft_out_v13_atlas` baseline), so prior benchmark numbers
+stay reproducible. 23 new columns and one new output file.
+
+### Added
+- `core/orf/resolve.py`: sequence-level ORF resolution. For each isoform with an
+  observed parent start, CRAFT reconstructs the isoform's own spliced CDS and
+  walks it in 3-nt codons to the first in-frame stop, so it finds the real stop
+  through frameshifts, exon-skip premature stops, and retained CDS introns.
+  New columns: `resolved_orf_status`, `resolved_stop_pos`, `resolved_cds_bp`,
+  `resolved_aa_length`, `resolved_cds_intervals`, `ptc_introduced`,
+  `intron_retained_in_cds`, `frame_consistent`, `stop_in_transcript`.
+- `nmd.predict_resolved`: NMD on the resolved stop -> `nmd_status_resolved`,
+  `nmd_rule_resolved`, `nmd_confidence_resolved`. On chr22, 739 isoforms flip to
+  NMD-sensitive vs the geometric call (499 from `escaped`, 240 from
+  `not_applicable`), the frameshift/PTC cases the geometric method could not see.
+- uORF detection and a long-3'UTR flag as advisory NMD branches: `uorf_count`,
+  `uorf_triggers_nmd`, `long_utr3_triggers_nmd`.
+- 5'UTR length deltas: `iso_utr5_length_nt`, `parent_utr5_length_nt`,
+  `utr5_length_delta_nt`, `utr5_length_delta_pct`; resolved 3'UTR deltas:
+  `iso_utr3_length_resolved_nt`, `utr3_length_delta_resolved_nt`,
+  `utr3_length_delta_pct_resolved`.
+- `export/celltype.py` + `--group-by`: expression-weighted per-cell-group
+  consequence fractions written to `per_celltype_consequence.tsv` and stored in
+  `annotated.h5ad` `uns['celltype_consequences']`.
+- `has_cds_bearing_parent` column and an opt-in `--prefer-coding-parent` flag
+  that breaks parent-selection ties toward CDS-bearing transcripts (off by
+  default to preserve reproducibility).
+- CLI options exposing previously hardcoded thresholds: `--tolerance`,
+  `--ptc-threshold-nt`, `--start-proximal-nt`, `--long-last-exon-nt`,
+  `--min-orf-aa`, `--orf-high-confidence`, `--orf-medium-confidence`,
+  `--long-utr3-nt`. Defaults equal the prior constants.
+- `docs/features.md`: complete column dictionary covering every output column.
+
+### Changed
+- `pfam.scan` now takes the isoform protein from the resolved CDS when available
+  (frameshift- and intron-retention-aware), falling back to the propagated then
+  de novo CDS. Domain comparison columns are unchanged in name.
+- `docs/methods.md`: the v1 "Known limitations" items now implemented (intron
+  retention, frame tracking, 5'UTR, cell-type aggregation) moved into a new
+  sequence-resolution section.
+
+### Tests
+- New: `tests/test_orf_resolve.py` (9), `tests/test_celltype.py` (6), plus
+  resolved-NMD, resolved/5'UTR, and parent-tiebreak cases. Suite: 187 passing,
+  ruff clean.
+
 ## [1.4.1] - 2026-05-25
 
 Docs-only patch release. Addresses review findings on the methods-paper draft committed in v1.4.

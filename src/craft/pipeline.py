@@ -14,14 +14,18 @@ import pysam
 
 from craft.core.completeness import Completeness, classify
 from craft.core.nmd import predict as nmd_predict
+from craft.core.nmd import predict_resolved as nmd_predict_resolved
 from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
+from craft.core.orf.resolve import resolve as resolve_orf
 from craft.core.pfam import scan as pfam_scan
 from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
 from craft.core.utr3 import annotate as utr3_annotate
+from craft.core.utr3 import annotate_resolved as utr3_annotate_resolved
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
+from craft.export.celltype import aggregate_consequences
 from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
 from craft.report.html import render as render_report
@@ -29,6 +33,7 @@ from craft.report.html import render as render_report
 _LIST_COLUMNS = (
     "propagated_cds_intervals",
     "denovo_cds_intervals",
+    "resolved_cds_intervals",
     "iso_pfam_domains",
     "parent_pfam_domains",
     "pfam_preserved",
@@ -84,7 +89,45 @@ _OUTPUT_COLUMNS = [
     "pfam_preserved",
     "pfam_lost",
     "pfam_gained",
+    # v1.5 additive columns (existing columns above are unchanged).
+    "has_cds_bearing_parent",
+    "resolved_orf_status",
+    "resolved_stop_pos",
+    "resolved_cds_bp",
+    "resolved_aa_length",
+    "resolved_cds_intervals",
+    "ptc_introduced",
+    "intron_retained_in_cds",
+    "frame_consistent",
+    "stop_in_transcript",
+    "uorf_count",
+    "uorf_triggers_nmd",
+    "nmd_status_resolved",
+    "nmd_rule_resolved",
+    "nmd_confidence_resolved",
+    "iso_utr3_length_resolved_nt",
+    "utr3_length_delta_resolved_nt",
+    "utr3_length_delta_pct_resolved",
+    "long_utr3_triggers_nmd",
+    "iso_utr5_length_nt",
+    "parent_utr5_length_nt",
+    "utr5_length_delta_nt",
+    "utr5_length_delta_pct",
 ]
+
+_RESOLVE_COLUMNS = (
+    "resolved_orf_status",
+    "resolved_stop_pos",
+    "resolved_cds_bp",
+    "resolved_aa_length",
+    "resolved_cds_intervals",
+    "ptc_introduced",
+    "intron_retained_in_cds",
+    "frame_consistent",
+    "stop_in_transcript",
+    "uorf_count",
+    "uorf_triggers_nmd",
+)
 
 _DENOVO_TRIGGER_OUTCOMES = frozenset(
     {
@@ -152,8 +195,12 @@ def _confidence_for(
     completeness_value: str,
     orf_outcome: str,
     denovo_found: bool,
+    high_threshold: float,
+    medium_threshold: float,
 ) -> tuple[str, float]:
-    category, score_value = score(completeness_value, orf_outcome)
+    category, score_value = score(
+        completeness_value, orf_outcome, high_threshold, medium_threshold
+    )
     if category == ORFConfidence.NONE and denovo_found:
         return ORFConfidence.LOW.value, 0.25
     return category.value, score_value
@@ -278,6 +325,36 @@ def _polya_evidence_columns(polya_evidence: dict[str, dict]) -> pd.DataFrame:
     )
 
 
+def _fill_resolved_defaults(df: pd.DataFrame) -> None:
+    """Fill defaults for the resolved columns in place (covers the no-genome path)."""
+    str_defaults = {
+        "resolved_orf_status": "resolution_failed",
+        "nmd_status_resolved": "not_applicable",
+        "nmd_rule_resolved": "",
+        "nmd_confidence_resolved": "none",
+    }
+    for col, default in str_defaults.items():
+        if col in df.columns:
+            df[col] = df[col].fillna(default)
+    for col in (
+        "ptc_introduced",
+        "intron_retained_in_cds",
+        "frame_consistent",
+        "stop_in_transcript",
+        "uorf_triggers_nmd",
+        "long_utr3_triggers_nmd",
+    ):
+        if col in df.columns:
+            df[col] = df[col].fillna(False).astype(bool)
+    for col in ("resolved_cds_bp", "resolved_aa_length", "uorf_count"):
+        if col in df.columns:
+            df[col] = df[col].fillna(0).astype("int64")
+    if "resolved_cds_intervals" in df.columns:
+        df["resolved_cds_intervals"] = df["resolved_cds_intervals"].apply(
+            lambda v: v if isinstance(v, list) else []
+        )
+
+
 def _empty_denovo() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
@@ -300,6 +377,16 @@ def run_annotate(
     counts_path: Path | None = None,
     pfam_hmm_path: Path | None = None,
     polya_atlas_path: Path | None = None,
+    tolerance: int = 50,
+    ptc_threshold_nt: int = 50,
+    start_proximal_nt: int = 150,
+    long_last_exon_nt: int = 400,
+    min_orf_aa: int = 50,
+    orf_high_confidence: float = 0.85,
+    orf_medium_confidence: float = 0.5,
+    long_utr3_nt: int = 1000,
+    prefer_coding_parent: bool = False,
+    group_by: str | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -323,7 +410,17 @@ def run_annotate(
         isoforms = _filter_isoforms_by_genome_contigs(isoforms, genome_path)
     reference = load_reference(reference_path)
 
-    classified = classify(isoforms, _exon_only_reference(reference))
+    ref_df = reference.df
+    cds_tx_ids = set(
+        ref_df.loc[ref_df["Feature"] == "CDS", "transcript_id"].astype(str).unique()
+    )
+    classified = classify(
+        isoforms,
+        _exon_only_reference(reference),
+        tolerance=tolerance,
+        cds_tx_ids=cds_tx_ids,
+        prefer_coding_parent=prefer_coding_parent,
+    )
     propagated = propagate(classified, reference)
 
     polya_evidence: dict[str, dict] = {}
@@ -340,12 +437,59 @@ def run_annotate(
         "transcript_id",
     ].tolist()
     if genome_path is not None and orphan_ids:
-        denovo_df = denovo_predict(_orphan_isoforms(isoforms, orphan_ids), genome_path)
+        denovo_df = denovo_predict(
+            _orphan_isoforms(isoforms, orphan_ids), genome_path, min_orf_aa=min_orf_aa
+        )
     else:
         denovo_df = _empty_denovo()
 
-    nmd_df = nmd_predict(classified, propagated)
+    nmd_df = nmd_predict(
+        classified,
+        propagated,
+        ptc_threshold_nt=ptc_threshold_nt,
+        start_proximal_nt=start_proximal_nt,
+        long_last_exon_nt=long_last_exon_nt,
+    )
     utr3_df = utr3_annotate(classified, propagated, reference, genome_fasta=genome_path)
+
+    # Sequence-level ORF resolution + its resolved consumers (additive columns).
+    if genome_path is not None:
+        resolve_df = resolve_orf(
+            classified, propagated, reference, genome_path, ptc_threshold_nt=ptc_threshold_nt
+        )
+        nmd_resolved_df = nmd_predict_resolved(
+            classified,
+            resolve_df,
+            ptc_threshold_nt=ptc_threshold_nt,
+            start_proximal_nt=start_proximal_nt,
+            long_last_exon_nt=long_last_exon_nt,
+        )
+        utr3_resolved_df = utr3_annotate_resolved(
+            classified, resolve_df, reference, long_utr3_nt=long_utr3_nt
+        )
+    else:
+        resolve_df = pd.DataFrame(columns=["transcript_id", *_RESOLVE_COLUMNS])
+        nmd_resolved_df = pd.DataFrame(
+            columns=[
+                "transcript_id",
+                "nmd_status_resolved",
+                "nmd_rule_resolved",
+                "nmd_confidence_resolved",
+            ]
+        )
+        utr3_resolved_df = pd.DataFrame(
+            columns=[
+                "transcript_id",
+                "iso_utr3_length_resolved_nt",
+                "utr3_length_delta_resolved_nt",
+                "utr3_length_delta_pct_resolved",
+                "long_utr3_triggers_nmd",
+                "iso_utr5_length_nt",
+                "parent_utr5_length_nt",
+                "utr5_length_delta_nt",
+                "utr5_length_delta_pct",
+            ]
+        )
 
     per_tx = classified.df.groupby("transcript_id").first().reset_index()[
         ["transcript_id", "completeness"]
@@ -364,6 +508,10 @@ def run_annotate(
         merged["denovo_stop_codon"] = [""] * n
     merged = merged.merge(nmd_df, on="transcript_id", how="left")
     merged = merged.merge(utr3_df, on="transcript_id", how="left")
+    merged = merged.merge(resolve_df, on="transcript_id", how="left")
+    merged = merged.merge(nmd_resolved_df, on="transcript_id", how="left")
+    merged = merged.merge(utr3_resolved_df, on="transcript_id", how="left")
+    _fill_resolved_defaults(merged)
 
     completeness_default = Completeness.NOVEL_NO_MATCH.value
     merged["completeness"] = merged["completeness"].fillna(completeness_default)
@@ -373,7 +521,11 @@ def run_annotate(
 
     confidence = merged.apply(
         lambda r: _confidence_for(
-            r["completeness"], r["orf_outcome"], bool(r["denovo_orf_found"])
+            r["completeness"],
+            r["orf_outcome"],
+            bool(r["denovo_orf_found"]),
+            orf_high_confidence,
+            orf_medium_confidence,
         ),
         axis=1,
         result_type="expand",
@@ -383,9 +535,10 @@ def run_annotate(
 
     # Add classify-derived columns from per-exon rows
     classify_meta = classified.df.groupby("transcript_id").first().reset_index()[
-        ["transcript_id", "shared_junctions", "parent_overlap_bp"]
+        ["transcript_id", "shared_junctions", "parent_overlap_bp", "has_cds_bearing_parent"]
     ]
     merged = merged.merge(classify_meta, on="transcript_id", how="left")
+    merged["has_cds_bearing_parent"] = merged["has_cds_bearing_parent"].fillna(False).astype(bool)
 
     # Look up parent gene from reference for the report's notable-findings panel.
     ref_df = reference.df
@@ -433,6 +586,20 @@ def run_annotate(
 
     counts_adata = load_counts(counts_path) if counts_path is not None else None
     adata = to_anndata(merged, counts=counts_adata)
+
+    if group_by is not None and counts_adata is not None:
+        try:
+            aggregate_consequences(
+                adata, merged, group_by, output_dir / "per_celltype_consequence.tsv"
+            )
+        except ValueError as exc:
+            print(f"[craft] Skipping per-cell-type aggregation: {exc}", file=sys.stderr)
+    elif group_by is not None:
+        print(
+            "[craft] --group-by given but no --counts; skipping per-cell-type aggregation.",
+            file=sys.stderr,
+        )
+
     write_h5ad(adata, output_dir / "annotated.h5ad")
 
     _write_outputs(merged, output_dir)
