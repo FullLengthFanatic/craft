@@ -131,6 +131,14 @@ def cli() -> None:
     help="On ties (equal shared junctions and exon overlap), prefer a CDS-bearing "
     "reference parent. Off by default to keep parent selection reproducible.",
 )
+@click.option(
+    "--coding-potential/--no-coding-potential",
+    default=True,
+    show_default=True,
+    help="Score each isoform's ORF for coding potential, using a hexamer + ORF "
+    "model self-calibrated to the reference. Skipped if the reference has no "
+    "non-coding transcripts.",
+)
 def annotate(
     isoforms: Path,
     reference: Path,
@@ -149,6 +157,7 @@ def annotate(
     orf_medium_confidence: float,
     long_utr3_nt: int,
     prefer_coding_parent: bool,
+    coding_potential: bool,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
     result = run_annotate(
@@ -168,6 +177,7 @@ def annotate(
         orf_medium_confidence=orf_medium_confidence,
         long_utr3_nt=long_utr3_nt,
         prefer_coding_parent=prefer_coding_parent,
+        coding_potential=coding_potential,
         group_by=group_by,
     )
     click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")

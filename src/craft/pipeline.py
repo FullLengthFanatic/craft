@@ -8,10 +8,12 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyranges as pr
 import pysam
 
+from craft.core.coding_potential import score_isoforms as coding_potential_score
 from craft.core.completeness import Completeness, classify
 from craft.core.nmd import predict as nmd_predict
 from craft.core.nmd import predict_denovo as nmd_predict_denovo
@@ -117,6 +119,9 @@ _OUTPUT_COLUMNS = [
     "nmd_status_denovo",
     "nmd_rule_denovo",
     "nmd_confidence_denovo",
+    "coding_potential_score",
+    "coding_potential_label",
+    "coding_potential_orf_source",
 ]
 
 _RESOLVE_COLUMNS = (
@@ -329,6 +334,23 @@ def _polya_evidence_columns(polya_evidence: dict[str, dict]) -> pd.DataFrame:
     )
 
 
+def _write_coding_model(model: dict, path: Path) -> None:
+    """Write a small, readable summary of the coding-potential model."""
+    summary = {
+        "features": ["hexamer_llr", "log10_orf_len", "orf_coverage"],
+        "weights": [float(w) for w in model["weights"][:-1]],
+        "intercept": float(model["weights"][-1]),
+        "feature_mean": [float(v) for v in model["mean"]],
+        "feature_std": [float(v) for v in model["std"]],
+        "threshold": float(model["threshold"]),
+        "n_train_coding": int(model["n_coding"]),
+        "n_train_noncoding": int(model["n_noncoding"]),
+        "heldout_auc": None if np.isnan(model["heldout_auc"]) else float(model["heldout_auc"]),
+    }
+    with open(path, "w") as fh:
+        json.dump(summary, fh, indent=2)
+
+
 def _fill_resolved_defaults(df: pd.DataFrame) -> None:
     """Fill defaults for the resolved columns in place (covers the no-genome path)."""
     str_defaults = {
@@ -393,6 +415,7 @@ def run_annotate(
     orf_medium_confidence: float = 0.5,
     long_utr3_nt: int = 1000,
     prefer_coding_parent: bool = False,
+    coding_potential: bool = True,
     group_by: str | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
@@ -598,6 +621,22 @@ def run_annotate(
             merged[col] = [[] for _ in range(len(merged))]
         else:
             merged[col] = merged[col].apply(lambda v: v if isinstance(v, list) else [])
+
+    if coding_potential and genome_path is not None:
+        cp_df, cp_model = coding_potential_score(merged, classified, reference, genome_path)
+        merged = merged.merge(cp_df, on="transcript_id", how="left")
+        if cp_model is not None:
+            _write_coding_model(cp_model, output_dir / "coding_potential_model.json")
+        else:
+            print(
+                "[craft] Reference has no non-coding transcripts; coding-potential "
+                "score skipped (columns left empty).",
+                file=sys.stderr,
+            )
+    if "coding_potential_score" not in merged.columns:
+        merged["coding_potential_score"] = float("nan")
+        merged["coding_potential_label"] = ""
+        merged["coding_potential_orf_source"] = "none"
 
     merged = merged.reindex(columns=_OUTPUT_COLUMNS)
 

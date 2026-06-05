@@ -33,11 +33,12 @@ isoform's reading frame departs from the reference, which is where it matters.
 
 | File | When | Contents |
 | --- | --- | --- |
-| `per_isoform.tsv` | always | One row per isoform, 62 columns. List-valued columns are JSON-encoded. |
+| `per_isoform.tsv` | always | One row per isoform, 68 columns. List-valued columns are JSON-encoded. |
 | `per_isoform.json` | always | Same content as records; list columns stay as lists. |
 | `report.html` | always | Self-contained interactive summary. |
 | `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
 | `per_celltype_consequence.tsv` | with `--counts` + `--group-by` | Expression-weighted consequence fractions per cell group. |
+| `coding_potential_model.json` | unless `--no-coding-potential` | Fitted coding-potential model: feature weights, training counts, held-out AUC. |
 
 Every `per_isoform` column is listed below, grouped by feature.
 
@@ -186,6 +187,37 @@ proteins are scored correctly), falling back to the propagated then de novo CDS.
 | `pfam_lost` | list | Parent domains absent from the isoform. |
 | `pfam_gained` | list | Isoform domains absent from the parent. |
 
+## Coding potential
+
+A coding-potential score self-calibrated to the supplied reference. CRAFT trains
+a model from the reference's own transcripts (CDS-bearing as coding, CDS-less as
+non-coding): a hexamer coding/non-coding log-likelihood table plus a logistic
+regression on three features (hexamer log-likelihood ratio, log10 ORF length, ORF
+coverage). It then scores each isoform's best ORF (resolved, else propagated,
+else de novo). No model file is shipped and no external tool is required; the
+model fits whatever organism the reference describes. The fitted model and a
+held-out AUC are written to `coding_potential_model.json`. Disable with
+`--no-coding-potential`; skipped automatically if the reference has no non-coding
+transcripts (columns left empty). This is a screening score; confirm borderline
+calls with CPC2 or CPAT. Fickett TESTCODE is not yet included.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `coding_potential_score` | float / null | Logistic probability the ORF is coding, in [0, 1]. Null when there is no ORF. |
+| `coding_potential_label` | categorical | `coding` if score ≥ 0.5, else `noncoding`. |
+| `coding_potential_orf_source` | str | Which ORF was scored: `resolved`, `propagated`, `denovo`, or `none`. |
+
+Use it to gate the orphan tail: a de-novo ORF with `coding_potential_label = coding`
+is a credible novel coding isoform (and its `nmd_status_denovo` call is meaningful),
+while `noncoding` flags likely lncRNA or spurious ORFs.
+
+```python
+# credible novel coding isoforms among orphans:
+df[(df["coding_potential_orf_source"] == "denovo") & (df["coding_potential_label"] == "coding")]
+# lncRNA candidates: best overlap is non-coding and the ORF scores non-coding:
+df[(df["orf_outcome"] == "no_parent_cds") & (df["coding_potential_label"] == "noncoding")]
+```
+
 ## Per-cell-type consequence aggregation (v1.5)
 
 With `--counts` and `--group-by OBS_COLUMN`, CRAFT writes
@@ -230,6 +262,7 @@ craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --outpu
 | `--pfam-hmm` | none | Enables Pfam domain analysis. |
 | `--polya-atlas` | none | Curated poly(A) BED; drives the `alt_3prime_end` reclassification. |
 | `--group-by` | none | Obs column to aggregate consequences by; writes `per_celltype_consequence.tsv` (requires `--counts`). |
+| `--coding-potential` / `--no-coding-potential` | on | Score each ORF for coding potential against a reference-calibrated model. |
 | `--tolerance` | 50 | End slack (bp) before calling a truncation. |
 | `--ptc-threshold-nt` | 50 | PTC rule distance to the last junction. |
 | `--start-proximal-nt` | 150 | CDS below this (bp) escapes NMD. |
