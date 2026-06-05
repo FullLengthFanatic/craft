@@ -44,8 +44,10 @@ craft annotate \
 Optional flags:
 
 - `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`.
+- `--group-by obs_column` with `--counts`, aggregates functional consequences per
+  cell group into `per_celltype_consequence.tsv`.
 - `--pfam-hmm Pfam-A.hmm` enables Pfam domain preservation analysis (slow with
-  full Pfam; v1.5 will switch to `hmmscan` against a pressed database).
+  full Pfam; a future release will switch to `hmmscan` against a pressed database).
 - `--polya-atlas sites.bed` provides curated polyA sites (PolyASite v3.0,
   PolyA_DB v4, or any user-supplied BED 6+). When supplied, atlas hits drive
   the ALT_3PRIME_END / STOP_AT_ALT_POLYA reclassification with the canonical
@@ -54,9 +56,14 @@ Optional flags:
   atlas is too dense (~one PAS every 200 bp) and produces uninformative
   98% match rates. See [`docs/user_guide.md`](docs/user_guide.md) for the
   BED format spec, recommended sources, and the full stringency story.
+- `--no-coding-potential` turns off the reference-calibrated coding-potential
+  score (on by default). Threshold flags (`--ptc-threshold-nt`, `--min-orf-aa`,
+  ...) are listed in [`docs/features.md`](docs/features.md#command-line-options).
 
-Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~1 minute.
-Full-genome scale (~600k iso rows) is roughly 10-15 minutes without `--pfam-hmm`.
+Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~2 minutes.
+Full-genome scale runs end-to-end: the bcM0003 PacBio Iso-Seq sample (698,049
+isoforms, with `--polya-atlas` and coding potential on, no `--pfam-hmm`) takes
+~1h45m wall and ~19 GB RAM on a 32-core VM.
 
 ## Inputs
 
@@ -115,10 +122,14 @@ df[df["completeness"] == "alt_3prime_end"]
 For each iso: pick the best-matching reference parent by maximal splice-junction
 sharing. Classify the iso's structural completeness from its end positions vs
 the parent's. Propagate the parent's CDS coordinates onto the iso, flagging
-cases where the start or stop codon falls outside the read. Apply NMD rules to
-the resulting stop position (50nt PTC rule + start-proximal, long-last-exon,
-and last-exon escapes). Compute 3' UTR length delta and scan for canonical
-poly(A) signals. Optionally translate the propagated CDS and scan against a
+cases where the start or stop codon falls outside the read. Then reconstruct the
+iso's own spliced CDS and walk it to the real in-frame stop, which catches
+frameshifts, exon-skip premature stops, and introns retained in the CDS
+(`resolved_*` columns). Apply NMD rules to both the geometric and resolved stop
+(50nt PTC rule + start-proximal, long-last-exon, and last-exon escapes), with a
+de-novo NMD call for orphan isoforms. Compute 3'/5' UTR length deltas and scan
+for poly(A) signals. Score each ORF for coding potential against a model
+self-calibrated to the reference. Optionally scan the translated CDS against a
 Pfam HMM database. Emit TSV, JSON, HTML report, and AnnData.
 
 For the full algorithm, threshold defaults, and design rationale, see
@@ -132,15 +143,16 @@ For the full algorithm, threshold defaults, and design rationale, see
   consequences per existing cell grouping, but clustering/cell-typing is upstream.
 - It does not harmonise chromosome naming. All three inputs must agree.
 
-As of v1.5 it does detect intron retention inside the CDS and the resulting
+Since v1.5 it detects intron retention inside the CDS and the resulting
 premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 
 ## Status
 
-Pre-alpha (v0.1.0). The pipeline composes end-to-end on real long-read isoform
-GTFs. Smoke-tested on a PacBio Iso-Seq sample (chr22 subset, ~13k isoforms).
-Methods paper in preparation: benchmarking reference-isoform ORF propagation vs
-de-novo prediction on simulated truncated reads.
+v1.6.0. The pipeline runs end-to-end on real long-read isoform GTFs at
+full-genome scale. Validated on a PacBio Iso-Seq sample (chr22 subset and the
+full bcM0003 sample, ~698k isoforms). Methods paper in preparation: benchmarking
+reference-isoform ORF propagation vs de-novo prediction on simulated truncated
+reads.
 
 ## Citation
 

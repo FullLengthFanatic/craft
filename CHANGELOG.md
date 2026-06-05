@@ -40,6 +40,28 @@ their documentation. The existing columns are unchanged; 68 columns total.
 ### Packaging
 - Version bumped `1.5.1` -> `1.6.0` in `src/craft/__init__.py` and `CITATION.cff`.
 
+### Verified on full bcM0003 sample (2026-06-05)
+
+Full-genome run on PacBio Iso-Seq sample bcM0003: 698,049 isoforms (673 skipped
+on 22 contigs absent from the GRCh38 primary-assembly FASTA), GENCODE v45
+reference, PolyASite v3.0 atlas (score-filtered). 1h47m wall, 18.6 GB peak RSS.
+
+Reproducibility holds at scale: `completeness`, `orf_outcome`, and `nmd_status`
+are byte-identical to the v1.4 atlas-filtered baseline across all 698,049
+isoforms (0 differences). `polya_evidence_source` is 85.1% `polya_db` as before.
+
+New v1.6 layers:
+- Resolved ORF: 148,245 intact, 156,436 ptc_premature, 30,526 ptc_intron_retained,
+  6,815 cds_extension, 56,611 no_stop_in_read (299,416 resolution_failed = the
+  orphan set). 186,962 isoforms carry a premature stop; 31,260 retain a CDS intron.
+- NMD: the sequence-resolved engine reclassifies ~41,100 isoforms to NMD-sensitive
+  that the geometric call missed (20,942 from `escaped`, 20,169 from
+  `not_applicable`). De-novo NMD gives 28,654 orphan isoforms an NMD-sensitive call
+  they previously lacked.
+- Coding potential: held-out AUC 0.855 (model trained on 4,000 + 4,000 GENCODE v45
+  transcripts). De-novo orphan ORFs are 16% coding (the gate for trusting their NMD
+  calls vs flagging lncRNA); intact ORFs are 83% coding.
+
 ## [1.5.1] - 2026-06-03
 
 ### Performance
