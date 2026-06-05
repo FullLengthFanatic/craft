@@ -3,4 +3,4 @@
 Long-read isoform functional-consequence annotator with truncation-aware ORF propagation.
 """
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"

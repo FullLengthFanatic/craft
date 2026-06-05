@@ -103,12 +103,67 @@ def _hexamer_score(seq: str, log_ratio: np.ndarray) -> float:
     return total / n if n else 0.0
 
 
-def _features(orf_nt: str, tx_len: int, log_ratio: np.ndarray) -> tuple[float, float, float]:
+# Fickett TESTCODE lookup tables (Fickett 1982, NAR 10:5303), as shipped by the
+# CPAT-derived lncScore implementation. content_para has 9 thresholds, so the
+# 10th content_prob entry is unused, matching that reference exactly.
+_FICKETT_POS_PROB = {
+    "A": [0.94, 0.68, 0.84, 0.93, 0.58, 0.68, 0.45, 0.34, 0.20, 0.22],
+    "C": [0.80, 0.70, 0.70, 0.81, 0.66, 0.48, 0.51, 0.33, 0.30, 0.23],
+    "G": [0.90, 0.88, 0.74, 0.64, 0.53, 0.48, 0.27, 0.16, 0.08, 0.08],
+    "T": [0.97, 0.97, 0.91, 0.68, 0.69, 0.44, 0.54, 0.20, 0.09, 0.09],
+}
+_FICKETT_POS_WEIGHT = {"A": 0.26, "C": 0.18, "G": 0.31, "T": 0.33}
+_FICKETT_POS_PARA = [1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1, 0.0]
+_FICKETT_CONT_PROB = {
+    "A": [0.28, 0.49, 0.44, 0.55, 0.62, 0.49, 0.67, 0.65, 0.81, 0.21],
+    "C": [0.82, 0.64, 0.51, 0.64, 0.59, 0.59, 0.43, 0.44, 0.39, 0.31],
+    "G": [0.40, 0.54, 0.47, 0.64, 0.64, 0.73, 0.41, 0.41, 0.33, 0.29],
+    "T": [0.28, 0.24, 0.39, 0.40, 0.55, 0.75, 0.56, 0.69, 0.51, 0.58],
+}
+_FICKETT_CONT_WEIGHT = {"A": 0.11, "C": 0.12, "G": 0.15, "T": 0.14}
+_FICKETT_CONT_PARA = [0.33, 0.31, 0.29, 0.27, 0.25, 0.23, 0.21, 0.17, 0.0]
+
+
+def _fickett_lookup(value: float, para: list[float], prob: list[float], weight: float) -> float:
+    if value < 0:
+        return 0.0
+    for idx, thr in enumerate(para):
+        if value >= thr:
+            return prob[idx] * weight
+    return 0.0
+
+
+def _fickett_score(seq: str) -> float:
+    """Fickett TESTCODE statistic (higher = more coding)."""
+    seq = seq.upper()
+    n = len(seq)
+    if n < 3:
+        return 0.0
+    score = 0.0
+    for base in "ACGT":
+        content = seq.count(base) / n
+        score += _fickett_lookup(
+            content, _FICKETT_CONT_PARA, _FICKETT_CONT_PROB[base], _FICKETT_CONT_WEIGHT[base]
+        )
+        c0 = seq[0::3].count(base)
+        c1 = seq[1::3].count(base)
+        c2 = seq[2::3].count(base)
+        position = max(c0, c1, c2) / (min(c0, c1, c2) + 1.0)
+        score += _fickett_lookup(
+            position, _FICKETT_POS_PARA, _FICKETT_POS_PROB[base], _FICKETT_POS_WEIGHT[base]
+        )
+    return score
+
+
+def _features(
+    orf_nt: str, tx_len: int, log_ratio: np.ndarray
+) -> tuple[float, float, float, float]:
     orf_len = len(orf_nt)
     hexamer = _hexamer_score(orf_nt, log_ratio)
     log_len = float(np.log10(orf_len + 1))
     coverage = (orf_len / tx_len) if tx_len > 0 else 0.0
-    return hexamer, log_len, coverage
+    fickett = _fickett_score(orf_nt)
+    return hexamer, log_len, coverage, fickett
 
 
 def _stride_sample(ids: list[str], cap: int) -> list[str]:

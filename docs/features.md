@@ -192,14 +192,14 @@ proteins are scored correctly), falling back to the propagated then de novo CDS.
 A coding-potential score self-calibrated to the supplied reference. CRAFT trains
 a model from the reference's own transcripts (CDS-bearing as coding, CDS-less as
 non-coding): a hexamer coding/non-coding log-likelihood table plus a logistic
-regression on three features (hexamer log-likelihood ratio, log10 ORF length, ORF
-coverage). It then scores each isoform's best ORF (resolved, else propagated,
-else de novo). No model file is shipped and no external tool is required; the
-model fits whatever organism the reference describes. The fitted model and a
-held-out AUC are written to `coding_potential_model.json`. Disable with
-`--no-coding-potential`; skipped automatically if the reference has no non-coding
-transcripts (columns left empty). This is a screening score; confirm borderline
-calls with CPC2 or CPAT. Fickett TESTCODE is not yet included.
+regression on four features (hexamer log-likelihood ratio, log10 ORF length, ORF
+coverage, and the Fickett TESTCODE statistic). It then scores each isoform's best
+ORF (resolved, else propagated, else de novo). No model file is shipped and no
+external tool is required; the model fits whatever organism the reference
+describes. The fitted model and a held-out AUC are written to
+`coding_potential_model.json`. Disable with `--no-coding-potential`; skipped
+automatically if the reference has no non-coding transcripts (columns left
+empty). This is a screening score; confirm borderline calls with CPC2 or CPAT.
 
 | Column | Type | Meaning |
 | --- | --- | --- |

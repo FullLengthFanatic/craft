@@ -337,7 +337,7 @@ def _polya_evidence_columns(polya_evidence: dict[str, dict]) -> pd.DataFrame:
 def _write_coding_model(model: dict, path: Path) -> None:
     """Write a small, readable summary of the coding-potential model."""
     summary = {
-        "features": ["hexamer_llr", "log10_orf_len", "orf_coverage"],
+        "features": ["hexamer_llr", "log10_orf_len", "orf_coverage", "fickett"],
         "weights": [float(w) for w in model["weights"][:-1]],
         "intercept": float(model["weights"][-1]),
         "feature_mean": [float(v) for v in model["mean"]],

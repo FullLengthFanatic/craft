@@ -9,6 +9,7 @@ import pysam
 
 from craft.core.coding_potential import (
     _auc,
+    _fickett_score,
     _hexamer_score,
     _log_ratio_table,
     build_model,
@@ -52,6 +53,16 @@ def test_auc_perfect_and_random() -> None:
     assert _auc(np.array([0.9, 0.8, 0.2, 0.1]), np.array([1, 1, 0, 0])) == 1.0
     assert _auc(np.array([0.1, 0.9, 0.2, 0.8]), np.array([1, 0, 1, 0])) == 0.0
     assert _auc(np.array([0.5, 0.5]), np.array([1, 0])) == 0.5
+
+
+def test_fickett_score_finite_and_higher_for_phased_codons() -> None:
+    # A perfectly codon-phased sequence has strong position bias -> higher Fickett
+    # than a low-complexity homopolymer.
+    phased = _fickett_score(_coding_seq(40))
+    flat = _fickett_score("A" * 120)
+    assert phased == phased  # not NaN
+    assert phased > flat
+    assert _fickett_score("AT") == 0.0  # too short
 
 
 def test_hexamer_score_separates_regimes() -> None:

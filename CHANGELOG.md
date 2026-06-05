@@ -7,31 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-05
+
+Two additive functional-annotation features for novel/orphan isoforms, plus
+their documentation. The existing columns are unchanged; 68 columns total.
+
 ### Added
 - Coding-potential scoring (`core/coding_potential.py`), self-calibrated to the
   supplied reference. CRAFT trains a hexamer coding/non-coding log-likelihood
-  table plus a logistic regression on three features (hexamer LLR, log10 ORF
-  length, ORF coverage) using the reference's own CDS-bearing transcripts as the
-  coding set and CDS-less transcripts as the non-coding set, then scores every
-  isoform's best ORF (resolved -> propagated -> de novo). No model is shipped and
-  no external tool is required. New columns `coding_potential_score`,
-  `coding_potential_label`, `coding_potential_orf_source`; the fitted model and a
-  held-out AUC are written to `coding_potential_model.json`. On chr22 the held-out
-  AUC is 0.87; de-novo orphan ORFs are 12% coding (the gate for trusting their
-  NMD calls vs flagging lncRNA). Default on; `--no-coding-potential` disables it,
-  and it auto-skips when the reference has no non-coding transcripts. Fickett
-  TESTCODE is not yet included. Existing columns unchanged (additive).
+  table plus a logistic regression on four features (hexamer LLR, log10 ORF
+  length, ORF coverage, Fickett TESTCODE) using the reference's own CDS-bearing
+  transcripts as the coding set and CDS-less transcripts as the non-coding set,
+  then scores every isoform's best ORF (resolved -> propagated -> de novo). No
+  model is shipped and no external tool is required. New columns
+  `coding_potential_score`, `coding_potential_label`, `coding_potential_orf_source`;
+  the fitted model and a held-out AUC are written to `coding_potential_model.json`.
+  On chr22 the held-out AUC is 0.88; de-novo orphan ORFs are 13% coding (the gate
+  for trusting their NMD calls vs flagging lncRNA). Default on;
+  `--no-coding-potential` disables it, and it auto-skips when the reference has no
+  non-coding transcripts.
 - De novo NMD: `nmd.predict_denovo` applies the escape-rule cascade to the de
   novo ORF, so orphan isoforms (`no_parent` / `no_parent_cds` / `start_lost`)
   with a predicted ORF now get an NMD call instead of `not_applicable`. New
   columns `nmd_status_denovo`, `nmd_rule_denovo`, `nmd_confidence_denovo`
   (confidence always `low`: the stop is from a predicted ORF, not a reference).
   This is the call to use for the orphan tail of novel-not-in-catalog (NNC)
-  isoforms. On chr22, 592 orphans become NMD-sensitive that previously had no
-  NMD call; the 971 orphans with no de novo ORF stay `not_applicable` (lncRNA
-  candidates). The existing 65 columns are unchanged (additive). `docs/features.md`
-  documents the columns and a one-line recipe to coalesce resolved + de novo into
-  a single `nmd_call`.
+  isoforms. On chr22, 592 orphans become NMD-sensitive that previously had no NMD
+  call; orphans with no de novo ORF stay `not_applicable` (lncRNA candidates).
+  `docs/features.md` documents the columns and a recipe to coalesce resolved +
+  de novo into a single `nmd_call`.
+
+### Packaging
+- Version bumped `1.5.1` -> `1.6.0` in `src/craft/__init__.py` and `CITATION.cff`.
 
 ## [1.5.1] - 2026-06-03
 
