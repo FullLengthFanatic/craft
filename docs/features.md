@@ -38,7 +38,7 @@ isoform's reading frame departs from the reference, which is where it matters.
 | `report.html` | always | Self-contained interactive summary. |
 | `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
 | `per_celltype_consequence.tsv` | with `--counts` + `--group-by` | Expression-weighted consequence fractions per cell group. |
-| `coding_potential_model.json` | unless `--no-coding-potential` | Fitted coding-potential model: feature weights, training counts, held-out AUC. |
+| `coding_potential_model.json` | unless `--no-coding-potential` | Fitted coding-potential model: feature weights, training counts, 5-fold cross-validated AUC. |
 
 Every `per_isoform` column is listed below, grouped by feature.
 
@@ -196,10 +196,11 @@ regression on four features (hexamer log-likelihood ratio, log10 ORF length, ORF
 coverage, and the Fickett TESTCODE statistic). It then scores each isoform's best
 ORF (resolved, else propagated, else de novo). No model file is shipped and no
 external tool is required; the model fits whatever organism the reference
-describes. The fitted model and a held-out AUC are written to
-`coding_potential_model.json`. Disable with `--no-coding-potential`; skipped
-automatically if the reference has no non-coding transcripts (columns left
-empty). This is a screening score; confirm borderline calls with CPC2 or CPAT.
+describes. The fitted model and a 5-fold cross-validated AUC (about 0.86 on
+GENCODE v45) are written to `coding_potential_model.json`. Disable with
+`--no-coding-potential`; skipped automatically if the reference has no non-coding
+transcripts (columns left empty). This is a screening score; confirm borderline
+calls with CPC2 or CPAT.
 
 | Column | Type | Meaning |
 | --- | --- | --- |

@@ -21,9 +21,11 @@ their documentation. The existing columns are unchanged; 68 columns total.
   then scores every isoform's best ORF (resolved -> propagated -> de novo). No
   model is shipped and no external tool is required. New columns
   `coding_potential_score`, `coding_potential_label`, `coding_potential_orf_source`;
-  the fitted model and a held-out AUC are written to `coding_potential_model.json`.
-  On chr22 the held-out AUC is 0.88; de-novo orphan ORFs are 13% coding (the gate
-  for trusting their NMD calls vs flagging lncRNA). Default on;
+  the fitted model and a 5-fold cross-validated AUC are written to
+  `coding_potential_model.json`. The cross-validated AUC on GENCODE v45 is 0.86
+  (a training-cap sweep to 40,000 confirmed the AUC plateaus by the 4,000
+  default); de-novo orphan ORFs come out ~15% coding (the gate for trusting their
+  NMD calls vs flagging lncRNA). Default on;
   `--no-coding-potential` disables it, and it auto-skips when the reference has no
   non-coding transcripts.
 - De novo NMD: `nmd.predict_denovo` applies the escape-rule cascade to the de
@@ -58,9 +60,10 @@ New v1.6 layers:
   that the geometric call missed (20,942 from `escaped`, 20,169 from
   `not_applicable`). De-novo NMD gives 28,654 orphan isoforms an NMD-sensitive call
   they previously lacked.
-- Coding potential: held-out AUC 0.855 (model trained on 4,000 + 4,000 GENCODE v45
-  transcripts). De-novo orphan ORFs are 16% coding (the gate for trusting their NMD
-  calls vs flagging lncRNA); intact ORFs are 83% coding.
+- Coding potential: 5-fold cross-validated AUC 0.860 (model trained on 4,000 +
+  4,000 GENCODE v45 transcripts; a cap sweep to 40,000 showed AUC plateaus by
+  4,000, so the default cap is kept). De-novo orphan ORFs are 16% coding (the gate
+  for trusting their NMD calls vs flagging lncRNA); intact ORFs are 83% coding.
 
 ## [1.5.1] - 2026-06-03
 
