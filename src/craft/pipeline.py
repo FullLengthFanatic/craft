@@ -14,6 +14,7 @@ import pysam
 
 from craft.core.completeness import Completeness, classify
 from craft.core.nmd import predict as nmd_predict
+from craft.core.nmd import predict_denovo as nmd_predict_denovo
 from craft.core.nmd import predict_resolved as nmd_predict_resolved
 from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
@@ -113,6 +114,9 @@ _OUTPUT_COLUMNS = [
     "parent_utr5_length_nt",
     "utr5_length_delta_nt",
     "utr5_length_delta_pct",
+    "nmd_status_denovo",
+    "nmd_rule_denovo",
+    "nmd_confidence_denovo",
 ]
 
 _RESOLVE_COLUMNS = (
@@ -332,6 +336,9 @@ def _fill_resolved_defaults(df: pd.DataFrame) -> None:
         "nmd_status_resolved": "not_applicable",
         "nmd_rule_resolved": "",
         "nmd_confidence_resolved": "none",
+        "nmd_status_denovo": "not_applicable",
+        "nmd_rule_denovo": "",
+        "nmd_confidence_denovo": "none",
     }
     for col, default in str_defaults.items():
         if col in df.columns:
@@ -491,6 +498,15 @@ def run_annotate(
             ]
         )
 
+    # NMD on the de novo ORF, for orphan isoforms with no reference-anchored stop.
+    nmd_denovo_df = nmd_predict_denovo(
+        classified,
+        denovo_df,
+        ptc_threshold_nt=ptc_threshold_nt,
+        start_proximal_nt=start_proximal_nt,
+        long_last_exon_nt=long_last_exon_nt,
+    )
+
     per_tx = classified.df.groupby("transcript_id").first().reset_index()[
         ["transcript_id", "completeness"]
     ]
@@ -511,6 +527,7 @@ def run_annotate(
     merged = merged.merge(resolve_df, on="transcript_id", how="left")
     merged = merged.merge(nmd_resolved_df, on="transcript_id", how="left")
     merged = merged.merge(utr3_resolved_df, on="transcript_id", how="left")
+    merged = merged.merge(nmd_denovo_df, on="transcript_id", how="left")
     _fill_resolved_defaults(merged)
 
     completeness_default = Completeness.NOVEL_NO_MATCH.value

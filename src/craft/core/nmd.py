@@ -282,3 +282,88 @@ def predict_resolved(
             }
         )
     return pd.DataFrame(rows, columns=cols)
+
+
+def predict_denovo(
+    classified: pr.PyRanges,
+    denovo: pd.DataFrame,
+    ptc_threshold_nt: int = PTC_THRESHOLD_NT,
+    start_proximal_nt: int = START_PROXIMAL_NT,
+    long_last_exon_nt: int = LONG_LAST_EXON_NT,
+) -> pd.DataFrame:
+    """Predict NMD from a de novo ORF, for isoforms with no usable parent.
+
+    Orphan isoforms (``no_parent`` / ``no_parent_cds`` / ``start_lost``) carry no
+    reference-anchored stop, so :func:`predict` and :func:`predict_resolved` leave
+    them ``not_applicable``. This applies the same escape-rule cascade to the de
+    novo ORF's stop instead, so a novel isoform with a predicted ORF still gets an
+    NMD call. Confidence is always ``low``: the stop comes from a predicted ORF,
+    not a curated reference.
+
+    Args:
+        classified: PyRanges of isoform exons (``transcript_id``, ``Strand``).
+        denovo: DataFrame from :func:`craft.core.orf.denovo.predict` (needs
+            ``denovo_orf_found``, ``denovo_cds_intervals``, ``denovo_cds_bp``).
+        ptc_threshold_nt: 50nt PTC rule threshold (mRNA distance to last junction).
+        start_proximal_nt: start-proximal escape window.
+        long_last_exon_nt: long-last-exon escape threshold.
+
+    Returns:
+        DataFrame with ``transcript_id``, ``nmd_status_denovo``,
+        ``nmd_rule_denovo``, ``nmd_confidence_denovo``.
+    """
+    cols = ["transcript_id", "nmd_status_denovo", "nmd_rule_denovo", "nmd_confidence_denovo"]
+    if denovo is None or denovo.empty or len(classified) == 0:
+        return pd.DataFrame(columns=cols)
+
+    iso_df = classified.df
+    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
+    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+
+    rows: list[dict] = []
+    for _, dn_row in denovo.iterrows():
+        tx_id = dn_row["transcript_id"]
+        intervals = dn_row["denovo_cds_intervals"]
+        found = bool(dn_row["denovo_orf_found"]) if pd.notna(dn_row["denovo_orf_found"]) else False
+        applicable = (
+            found and isinstance(intervals, list) and len(intervals) > 0
+            and tx_id in iso_exons_by_tx
+        )
+        if not applicable:
+            rows.append(
+                {
+                    "transcript_id": tx_id,
+                    "nmd_status_denovo": NMDStatus.NOT_APPLICABLE.value,
+                    "nmd_rule_denovo": "",
+                    "nmd_confidence_denovo": ORFConfidence.NONE.value,
+                }
+            )
+            continue
+
+        strand = str(iso_strand[tx_id])
+        iso_exons = iso_exons_by_tx[tx_id]
+        stop_pos = _stop_codon_genome(intervals, strand)
+        distance, in_last = _distance_stop_to_last_junction(stop_pos, iso_exons, strand)
+        last_exon_len = _last_exon_length(iso_exons, strand)
+        cds_bp = int(dn_row["denovo_cds_bp"])
+
+        if in_last:
+            status, rule = NMDStatus.ESCAPED, "stop_in_last_exon"
+        elif distance <= ptc_threshold_nt:
+            status, rule = NMDStatus.ESCAPED, "within_50nt_of_last_junction"
+        elif cds_bp < start_proximal_nt:
+            status, rule = NMDStatus.ESCAPED, "start_proximal"
+        elif last_exon_len > long_last_exon_nt:
+            status, rule = NMDStatus.ESCAPED, "long_last_exon"
+        else:
+            status, rule = NMDStatus.SENSITIVE, "ptc_50nt_rule"
+
+        rows.append(
+            {
+                "transcript_id": tx_id,
+                "nmd_status_denovo": status.value,
+                "nmd_rule_denovo": rule,
+                "nmd_confidence_denovo": ORFConfidence.LOW.value,
+            }
+        )
+    return pd.DataFrame(rows, columns=cols)

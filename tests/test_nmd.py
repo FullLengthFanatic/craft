@@ -457,3 +457,70 @@ def test_predict_resolved_no_stop_is_not_applicable() -> None:
     res = pd.DataFrame([_res_row("t1", "no_stop_in_read", [], cds_bp=0, stop=False)])
     out = predict_resolved(iso, res)
     assert _row(out, "t1")["nmd_status_resolved"] == NMDStatus.NOT_APPLICABLE.value
+
+
+# ---- de novo NMD (predict_denovo) --------------------------------------------
+
+from craft.core.nmd import predict_denovo  # noqa: E402
+
+
+def _dn_row(tx_id, found, intervals, cds_bp):
+    return {
+        "transcript_id": tx_id,
+        "denovo_orf_found": found,
+        "denovo_cds_bp": cds_bp,
+        "denovo_cds_intervals": intervals,
+        "denovo_orf_aa_length": cds_bp // 3,
+        "denovo_start_codon": "ATG" if found else "",
+        "denovo_stop_codon": "TAA" if found else "",
+    }
+
+
+def test_predict_denovo_ptc_far_from_last_junction_is_sensitive() -> None:
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 300, "+", "t1"),
+            ("chr1", 400, 500, "+", "t1"),
+            ("chr1", 600, 700, "+", "t1"),
+        ]
+    )
+    # 200 bp de novo ORF (not start-proximal) stopping in exon 2 at last coding
+    # base 449, 51 nt from the last junction -> NMD-sensitive.
+    dn = pd.DataFrame(
+        [_dn_row("t1", True, [("chr1", 150, 300, "+"), ("chr1", 400, 450, "+")], cds_bp=200)]
+    )
+    r = _row(predict_denovo(iso, dn), "t1")
+    assert r["nmd_status_denovo"] == NMDStatus.SENSITIVE.value
+    assert r["nmd_rule_denovo"] == "ptc_50nt_rule"
+    assert r["nmd_confidence_denovo"] == ORFConfidence.LOW.value
+
+
+def test_predict_denovo_stop_in_last_exon_escapes() -> None:
+    iso = _iso_pr([("chr1", 100, 200, "+", "t1"), ("chr1", 300, 400, "+", "t1")])
+    dn = pd.DataFrame(
+        [_dn_row("t1", True, [("chr1", 150, 200, "+"), ("chr1", 300, 380, "+")], cds_bp=130)]
+    )
+    r = _row(predict_denovo(iso, dn), "t1")
+    assert r["nmd_status_denovo"] == NMDStatus.ESCAPED.value
+    assert r["nmd_rule_denovo"] == "stop_in_last_exon"
+    assert r["nmd_confidence_denovo"] == ORFConfidence.LOW.value
+
+
+def test_predict_denovo_no_orf_is_not_applicable() -> None:
+    iso = _iso_pr([("chr1", 100, 200, "+", "t1")])
+    dn = pd.DataFrame([_dn_row("t1", False, [], cds_bp=0)])
+    r = _row(predict_denovo(iso, dn), "t1")
+    assert r["nmd_status_denovo"] == NMDStatus.NOT_APPLICABLE.value
+    assert r["nmd_confidence_denovo"] == ORFConfidence.NONE.value
+
+
+def test_predict_denovo_empty_returns_empty() -> None:
+    iso = _iso_pr([("chr1", 100, 200, "+", "t1")])
+    out = predict_denovo(iso, pd.DataFrame())
+    assert out.empty
+    assert list(out.columns) == [
+        "transcript_id",
+        "nmd_status_denovo",
+        "nmd_rule_denovo",
+        "nmd_confidence_denovo",
+    ]

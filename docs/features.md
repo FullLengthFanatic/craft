@@ -123,9 +123,21 @@ the geometric stop, once to the resolved stop.
 | `stop_to_last_junction_nt` | int / null | mRNA distance from the geometric stop to the last exon-exon junction. |
 | `last_exon_length_nt` | int / null | Last exon length. |
 | `nmd_confidence` | categorical | `high` for intact propagation, `medium` for disrupted, `none` otherwise. |
-| `nmd_status_resolved` | categorical | NMD call on the **resolved** stop. Prefer this column. |
+| `nmd_status_resolved` | categorical | NMD call on the **resolved** stop. Prefer this for parent-anchored isoforms. |
 | `nmd_rule_resolved` | str | Escape rule that fired on the resolved stop. |
 | `nmd_confidence_resolved` | categorical | `high` when the resolved ORF is intact, `medium` otherwise, `none` when not applicable. |
+| `nmd_status_denovo` | categorical | NMD call on the **de novo** ORF, for orphan isoforms (`no_parent` / `no_parent_cds` / `start_lost`) that have no reference-anchored stop. `not_applicable` for parent-anchored isoforms and orphans with no de novo ORF. |
+| `nmd_rule_denovo` | str | Escape rule that fired on the de novo stop. |
+| `nmd_confidence_denovo` | categorical | Always `low` when a call is made: the stop comes from a predicted ORF, not a curated reference. |
+
+For a single NMD call per isoform, coalesce the resolved call (reference-anchored,
+higher confidence) with the de novo call (orphans):
+
+```python
+df["nmd_call"] = df["nmd_status_resolved"].where(
+    df["nmd_status_resolved"] != "not_applicable", df["nmd_status_denovo"]
+)
+```
 
 Advisory NMD branches (separate from the primary call, noisier by nature):
 

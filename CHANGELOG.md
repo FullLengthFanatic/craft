@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- De novo NMD: `nmd.predict_denovo` applies the escape-rule cascade to the de
+  novo ORF, so orphan isoforms (`no_parent` / `no_parent_cds` / `start_lost`)
+  with a predicted ORF now get an NMD call instead of `not_applicable`. New
+  columns `nmd_status_denovo`, `nmd_rule_denovo`, `nmd_confidence_denovo`
+  (confidence always `low`: the stop is from a predicted ORF, not a reference).
+  This is the call to use for the orphan tail of novel-not-in-catalog (NNC)
+  isoforms. On chr22, 592 orphans become NMD-sensitive that previously had no
+  NMD call; the 971 orphans with no de novo ORF stay `not_applicable` (lncRNA
+  candidates). The existing 65 columns are unchanged (additive). `docs/features.md`
+  documents the columns and a one-line recipe to coalesce resolved + de novo into
+  a single `nmd_call`.
+
 ## [1.5.1] - 2026-06-03
 
 ### Performance
