@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-06-06
+
 ### Added
 - `--classification FILE` (+ `--classification-columns`, default
   `structural_category`): join columns from a SQANTI3/pigeon classification table
@@ -17,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unmatched isoforms get an empty value; name collisions are prefixed `class_`;
   the match rate is logged. Carried columns are appended (existing columns
   unchanged); verified on chr22 (13,246/13,246 matched, prior columns identical).
+
+### Packaging
+- Version bumped `1.6.0` -> `1.6.1` in `src/craft/__init__.py` and `CITATION.cff`.
 
 ## [1.6.0] - 2026-06-05
 
