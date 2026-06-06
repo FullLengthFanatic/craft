@@ -139,6 +139,21 @@ def cli() -> None:
     "model self-calibrated to the reference. Skipped if the reference has no "
     "non-coding transcripts.",
 )
+@click.option(
+    "--classification",
+    "classification_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional SQANTI3/pigeon (or any) classification TSV, keyed by isoform "
+    "id. Selected columns are joined onto the per-isoform output by transcript_id "
+    "(e.g. to carry structural_category for novel-boundary x consequence analysis).",
+)
+@click.option(
+    "--classification-columns",
+    default="structural_category",
+    show_default=True,
+    help="Comma-separated column names to carry from --classification.",
+)
 def annotate(
     isoforms: Path,
     reference: Path,
@@ -158,6 +173,8 @@ def annotate(
     long_utr3_nt: int,
     prefer_coding_parent: bool,
     coding_potential: bool,
+    classification_path: Path | None,
+    classification_columns: str,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
     result = run_annotate(
@@ -178,6 +195,8 @@ def annotate(
         long_utr3_nt=long_utr3_nt,
         prefer_coding_parent=prefer_coding_parent,
         coding_potential=coding_potential,
+        classification_path=classification_path,
+        classification_columns=classification_columns,
         group_by=group_by,
     )
     click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")

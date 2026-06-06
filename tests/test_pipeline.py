@@ -475,3 +475,53 @@ def test_pipeline_cli_smoke(pipeline_inputs: dict[str, Path]) -> None:
     assert result.exit_code == 0, result.output
     assert "Annotated 2 isoforms" in result.output
     assert (pipeline_inputs["output_dir"] / "per_isoform.tsv").exists()
+
+
+def test_load_classification_autodetects_id_and_skips_missing(tmp_path: Path) -> None:
+    from craft.pipeline import _load_classification
+
+    p = tmp_path / "c.tsv"
+    p.write_text(
+        "isoform\tstructural_category\na\tnovel_not_in_catalog\nb\tfull-splice_match\n"
+    )
+    df, found = _load_classification(p, ["structural_category", "nonexistent"])
+    assert found == ["structural_category"]
+    assert list(df.columns) == ["transcript_id", "structural_category"]
+    assert set(df["transcript_id"]) == {"a", "b"}
+
+
+def test_pipeline_classification_passthrough(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    cls = tmp_path / "classification.txt"
+    cls.write_text(
+        "isoform\tstructural_category\tsubcategory\n"
+        "t_intact\tfull-splice_match\treference_match\n"
+        "t_novel\tnovel_not_in_catalog\tat_least_one_novel_splicesite\n"
+    )
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        classification_path=cls,
+        classification_columns="structural_category,subcategory",
+    )
+    r = result.set_index("transcript_id")
+    assert r.loc["t_intact", "structural_category"] == "full-splice_match"
+    assert r.loc["t_novel", "structural_category"] == "novel_not_in_catalog"
+    assert r.loc["t_novel", "subcategory"] == "at_least_one_novel_splicesite"
+    tsv = pd.read_csv(pipeline_inputs["output_dir"] / "per_isoform.tsv", sep="\t")
+    assert "structural_category" in tsv.columns
+
+
+def test_pipeline_no_classification_omits_columns(
+    pipeline_inputs: dict[str, Path],
+) -> None:
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+    )
+    assert "structural_category" not in result.columns

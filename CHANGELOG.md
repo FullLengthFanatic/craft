@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--classification FILE` (+ `--classification-columns`, default
+  `structural_category`): join columns from a SQANTI3/pigeon classification table
+  onto the per-isoform output by transcript id. CRAFT stays out of structural QC
+  but can now carry the upstream structural class alongside its consequence calls,
+  making "novel splice boundary x functional consequence" a one-line filter. The
+  table is auto-keyed (`isoform` / `transcript_id` / `pbid` / first column);
+  unmatched isoforms get an empty value; name collisions are prefixed `class_`;
+  the match rate is logged. Carried columns are appended (existing columns
+  unchanged); verified on chr22 (13,246/13,246 matched, prior columns identical).
+
 ## [1.6.0] - 2026-06-05
 
 Two additive functional-annotation features for novel/orphan isoforms, plus

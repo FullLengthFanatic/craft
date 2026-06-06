@@ -384,6 +384,33 @@ def _fill_resolved_defaults(df: pd.DataFrame) -> None:
         )
 
 
+def _load_classification(
+    path: Path, columns: list[str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """Load selected columns from a SQANTI3/pigeon (or any) classification table.
+
+    The table is keyed by isoform id (``isoform``, ``transcript_id``, ``pbid``, or
+    the first column). Returns a DataFrame with ``transcript_id`` plus the
+    available requested columns, and the list of columns actually found.
+    """
+    df = pd.read_csv(path, sep=None, engine="python", dtype=str)
+    id_col = next(
+        (c for c in ("isoform", "transcript_id", "pbid", "id") if c in df.columns),
+        df.columns[0],
+    )
+    df = df.rename(columns={id_col: "transcript_id"})
+    df = df.drop_duplicates("transcript_id", keep="first")
+    found = [c for c in columns if c in df.columns and c != "transcript_id"]
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        print(
+            f"[craft] classification: columns not found and skipped: {missing} "
+            f"(available: {[c for c in df.columns if c != 'transcript_id'][:20]})",
+            file=sys.stderr,
+        )
+    return df[["transcript_id", *found]], found
+
+
 def _empty_denovo() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
@@ -416,6 +443,8 @@ def run_annotate(
     long_utr3_nt: int = 1000,
     prefer_coding_parent: bool = False,
     coding_potential: bool = True,
+    classification_path: Path | None = None,
+    classification_columns: str = "structural_category",
     group_by: str | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
@@ -638,7 +667,27 @@ def run_annotate(
         merged["coding_potential_label"] = ""
         merged["coding_potential_orf_source"] = "none"
 
-    merged = merged.reindex(columns=_OUTPUT_COLUMNS)
+    # Optional passthrough of external classification columns (e.g. SQANTI3
+    # structural_category), joined by transcript_id and appended at the end.
+    carried: list[str] = []
+    if classification_path is not None:
+        wanted = [c.strip() for c in classification_columns.split(",") if c.strip()]
+        cls_df, found = _load_classification(classification_path, wanted)
+        rename = {c: (f"class_{c}" if c in merged.columns else c) for c in found}
+        cls_df = cls_df.rename(columns=rename)
+        carried = [rename[c] for c in found]
+        merged = merged.merge(cls_df, on="transcript_id", how="left")
+        for c in carried:
+            merged[c] = merged[c].fillna("")
+        if carried:
+            matched = (merged[carried[0]].astype(str) != "").sum()
+            print(
+                f"[craft] classification: carried {carried}; matched {matched}/{len(merged)} "
+                f"isoforms by transcript_id",
+                file=sys.stderr,
+            )
+
+    merged = merged.reindex(columns=_OUTPUT_COLUMNS + carried)
 
     counts_adata = load_counts(counts_path) if counts_path is not None else None
     adata = to_anndata(merged, counts=counts_adata)

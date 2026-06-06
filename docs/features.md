@@ -219,6 +219,31 @@ df[(df["coding_potential_orf_source"] == "denovo") & (df["coding_potential_label
 df[(df["orf_outcome"] == "no_parent_cds") & (df["coding_potential_label"] == "noncoding")]
 ```
 
+## External classification passthrough
+
+CRAFT does not do structural QC; it assumes the isoform GTF is already curated by
+SQANTI3/pigeon. To combine that upstream classification with CRAFT's consequence
+calls, pass the classification table with `--classification FILE`. CRAFT joins the
+columns named in `--classification-columns` (default `structural_category`) onto
+the per-isoform output by transcript id and appends them as new columns.
+
+The table is any TSV/CSV keyed by isoform id (`isoform`, `transcript_id`, `pbid`,
+or the first column; SQANTI3's `*_classification.txt` and pigeon both use
+`isoform`). Isoforms absent from the table get an empty value; a carried column
+whose name collides with a CRAFT column is prefixed `class_`. CRAFT logs the
+match rate to stderr.
+
+This is what makes the "novel splice boundary x functional consequence" analysis a
+one-liner: CRAFT supplies the consequence half (`resolved_orf_status`,
+`ptc_introduced`, `nmd_status_resolved`, `nmd_status_denovo`,
+`coding_potential_label`) and the passthrough supplies the SQANTI structural class.
+
+```python
+# NNC isoforms that are NMD substrates with a credible ORF:
+nnc = df[df["structural_category"] == "novel_not_in_catalog"]
+nnc[(nnc["nmd_status_resolved"] == "sensitive") & (nnc["coding_potential_label"] == "coding")]
+```
+
 ## Per-cell-type consequence aggregation (v1.5)
 
 With `--counts` and `--group-by OBS_COLUMN`, CRAFT writes
@@ -264,6 +289,8 @@ craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --outpu
 | `--polya-atlas` | none | Curated poly(A) BED; drives the `alt_3prime_end` reclassification. |
 | `--group-by` | none | Obs column to aggregate consequences by; writes `per_celltype_consequence.tsv` (requires `--counts`). |
 | `--coding-potential` / `--no-coding-potential` | on | Score each ORF for coding potential against a reference-calibrated model. |
+| `--classification` | none | SQANTI3/pigeon (or any) classification TSV; selected columns are joined onto the output by transcript_id. |
+| `--classification-columns` | `structural_category` | Comma-separated columns to carry from `--classification`. |
 | `--tolerance` | 50 | End slack (bp) before calling a truncation. |
 | `--ptc-threshold-nt` | 50 | PTC rule distance to the last junction. |
 | `--start-proximal-nt` | 150 | CDS below this (bp) escapes NMD. |

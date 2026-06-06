@@ -59,6 +59,9 @@ Optional flags:
 - `--no-coding-potential` turns off the reference-calibrated coding-potential
   score (on by default). Threshold flags (`--ptc-threshold-nt`, `--min-orf-aa`,
   ...) are listed in [`docs/features.md`](docs/features.md#command-line-options).
+- `--classification sqanti_classification.txt` joins SQANTI3/pigeon columns
+  (default `structural_category`) onto the output by transcript_id, so you can
+  cut novel-boundary classes against CRAFT's consequence calls.
 
 Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~2 minutes.
 Full-genome scale runs end-to-end: the bcM0003 PacBio Iso-Seq sample (698,049
