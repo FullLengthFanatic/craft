@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- `docs/features.md`: added an "Interpreting the NMD columns" glossary defining
+  `sensitive` / `escaped` / `not_applicable` in plain language (with the two
+  traps: escaped != full-length, not_applicable != safe) and the geometric vs
+  resolved vs de-novo distinction. Linked from the user guide.
+
 ## [1.6.1] - 2026-06-06
 
 ### Added

@@ -159,6 +159,9 @@ coordinates. The resolved columns (`resolved_orf_status`, `nmd_status_resolved`,
 isoform's own spliced sequence and finding the real stop. Prefer the resolved
 columns for functional-consequence calls; see
 [`features.md`](features.md#the-one-thing-to-understand-first-geometric-vs-resolved).
+For what `sensitive` / `escaped` / `not_applicable` mean and the geometric vs
+resolved vs de-novo distinction, see
+[Interpreting the NMD columns](features.md#interpreting-the-nmd-columns).
 
 ### With Pfam domain analysis
 

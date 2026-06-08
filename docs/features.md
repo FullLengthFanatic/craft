@@ -117,6 +117,47 @@ The escape-rule cascade (stop in last exon, within 50 nt of the last junction,
 start-proximal, long last exon, else NMD-sensitive) is applied twice: once to
 the geometric stop, once to the resolved stop.
 
+### Interpreting the NMD columns
+
+Every NMD call answers one question: *will nonsense-mediated decay degrade this
+transcript?* NMD targets mRNAs whose stop codon looks premature, the classic
+trigger being a stop more than ~50 nt upstream of the last exon-exon junction
+(an exon-junction complex remains downstream of the stop and recruits the decay
+machinery). The status takes three values:
+
+- **`sensitive`** = predicted NMD substrate: the stop is >50 nt upstream of the
+  last junction and no escape rule fires, so the transcript is predicted to be
+  degraded. Read it as "likely unproductive, little-to-no protein" — typically a
+  frameshift, exon skip, retained intron, or a regulated AS-NMD isoform.
+- **`escaped`** = has a stop but predicted to evade NMD, because one escape rule
+  holds: stop in the last exon (the normal case), within ~50 nt of the last
+  junction, a very short CDS (re-initiation), or a very long last exon. **Escaped
+  does not mean full-length or normal** — a 5'-truncated isoform whose stop lands
+  in the last exon is "escaped" too. It only means "not an NMD target."
+- **`not_applicable`** = NMD could not be evaluated: no parent CDS, the start
+  codon is not observed, or no in-frame stop was found in the read. **It is the
+  absence of a call, not "safe."**
+
+`nmd_rule` / `nmd_rule_resolved` name which rule decided the call (one of the four
+escapes, or `ptc_50nt_rule` when sensitive).
+
+**Geometric vs resolved vs de novo** is the same question with three ways of
+locating the stop:
+
+- **`nmd_status` (geometric)** uses the stop from projecting the parent CDS
+  coordinates onto the isoform (no sequence read). Fast and correct when the CDS
+  matches the reference, but the projected end is not the real stop for a
+  frameshifted / exon-skipped / intron-retaining isoform.
+- **`nmd_status_resolved`** uses the real in-frame stop from translating the
+  isoform's own spliced CDS. It catches the premature stops the geometric
+  projection misses. **Prefer this column** for parent-anchored isoforms.
+- **`nmd_status_denovo`** applies the same rules to the de-novo ORF, for orphan
+  isoforms with no reference CDS (always `low` confidence).
+
+The geometric and resolved calls agree for structurally intact isoforms and
+diverge exactly where the reading frame departs from the reference, which is
+where NMD matters most.
+
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `nmd_status` | categorical | Geometric NMD call: `sensitive`, `escaped`, `not_applicable`. |
