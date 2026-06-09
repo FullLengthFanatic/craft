@@ -397,9 +397,13 @@ set to calibrate against.
 
 **Source:** `src/craft/core/nmd.py::predict`
 
-**What it predicts.** For each iso with a propagated (or disrupted) ORF
-that has its stop codon observed, applies a rule cascade to decide
-whether the transcript would trigger nonsense-mediated decay.
+**What it predicts.** A single NMD call per isoform from the **resolved** ORF
+stop (the real in-frame stop from the sequence-resolution step below), falling
+back to the de-novo ORF stop for orphan isoforms. `nmd_basis` records which ORF
+was used. As of v1.7 the older geometric NMD (applied to the projected interval
+end) has been removed; the rule cascade below now operates on the resolved stop.
+It applies a rule cascade to decide whether the transcript would trigger
+nonsense-mediated decay.
 
 **Rule cascade** (each is a sufficient condition for ESCAPE, evaluated in
 priority order):
@@ -869,8 +873,11 @@ care about uORFs explicitly.
 The geometric propagation above never reads the spliced sequence, so it cannot
 see a frameshift, an exon-skip premature stop, or an intron retained inside the
 CDS. v1.5 adds a sequence-level pass (`src/craft/core/orf/resolve.py`) that runs
-alongside the geometric one and writes a parallel set of `resolved_*` columns;
-the geometric columns are unchanged.
+alongside the geometric propagation. As of v1.7, NMD and the UTR metrics are
+computed once from this resolved stop (the older geometric `nmd_status` /
+geometric 3'UTR columns were removed); the geometric propagation columns
+(`orf_outcome`, `propagated_cds_*`) remain as the structural classification and
+the anchor the resolution builds on.
 
 For every isoform whose parent start codon is observed, CRAFT projects the
 parent start into the isoform's transcript coordinates, builds the isoform's own
@@ -895,7 +902,7 @@ documented in [`features.md`](features.md).
 - **No per-gene HTML track view.** Side-by-side exon/CDS/UTR views for all
   isoforms of a gene are still planned.
 - **uORF and long-3'UTR NMD are advisory.** They are reported as separate flags,
-  not folded into `nmd_status_resolved`, because 5' ends are frequently truncated
+  not folded into `nmd_status`, because 5' ends are frequently truncated
   in long-read data and these branches are noisier than the EJC rule.
 - **Non-canonical poly(A) signals not scanned.** Eleven canonical
   variants are listed in `POLYA_SIGNALS`. Cell-type-specific or

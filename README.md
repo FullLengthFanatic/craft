@@ -84,7 +84,7 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 | File                          | Description                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `per_isoform.tsv`             | per-iso annotation table, 62 columns, list columns JSON-encoded             |
+| `per_isoform.tsv`             | per-iso annotation table, 60 columns, list columns JSON-encoded             |
 | `per_isoform.json`            | same content as records; list columns stay as lists                         |
 | `report.html`                 | self-contained interactive report (summary cards + plotly + table)          |
 | `annotated.h5ad`              | AnnData with iso annotations in `var`, per-cell counts in `X` (if given)    |
@@ -92,11 +92,11 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 Every column is documented in [`docs/features.md`](docs/features.md).
 
-CRAFT reports each isoform's ORF two ways: the original **geometric** projection
-(`orf_outcome`, `nmd_status`, ...) and a v1.5 **sequence-resolved** view
-(`resolved_orf_status`, `nmd_status_resolved`, `intron_retained_in_cds`, ...)
-that reads the spliced sequence to find the real stop. Prefer the resolved
-columns for functional-consequence calls.
+CRAFT classifies each ORF by geometric propagation (`orf_outcome`,
+`propagated_cds_*`) and then reconstructs the spliced CDS to find the real stop
+(`resolved_orf_status`, `intron_retained_in_cds`, ...). NMD and UTR consequences
+are computed once from the resolved ORF (single `nmd_status`, with a de-novo
+fallback for orphans recorded in `nmd_basis`).
 
 ## Filter recipes
 
@@ -128,9 +128,9 @@ the parent's. Propagate the parent's CDS coordinates onto the iso, flagging
 cases where the start or stop codon falls outside the read. Then reconstruct the
 iso's own spliced CDS and walk it to the real in-frame stop, which catches
 frameshifts, exon-skip premature stops, and introns retained in the CDS
-(`resolved_*` columns). Apply NMD rules to both the geometric and resolved stop
-(50nt PTC rule + start-proximal, long-last-exon, and last-exon escapes), with a
-de-novo NMD call for orphan isoforms. Compute 3'/5' UTR length deltas and scan
+(`resolved_*` columns). Apply NMD rules once to the resolved stop
+(50nt PTC rule + start-proximal, long-last-exon, and last-exon escapes), falling
+back to the de-novo ORF for orphan isoforms (`nmd_basis`). Compute 3'/5' UTR length deltas and scan
 for poly(A) signals. Score each ORF for coding potential against a model
 self-calibrated to the reference. Optionally scan the translated CDS against a
 Pfam HMM database. Emit TSV, JSON, HTML report, and AnnData.
@@ -151,7 +151,7 @@ premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 
 ## Status
 
-v1.6.0. The pipeline runs end-to-end on real long-read isoform GTFs at
+v1.7.0. The pipeline runs end-to-end on real long-read isoform GTFs at
 full-genome scale. Validated on a PacBio Iso-Seq sample (chr22 subset and the
 full bcM0003 sample, ~698k isoforms). Methods paper in preparation: benchmarking
 reference-isoform ORF propagation vs de-novo prediction on simulated truncated

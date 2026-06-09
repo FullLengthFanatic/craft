@@ -7,8 +7,8 @@ authors:
     given-names: Simone
     email: simone.picelli@iob.ch
     affiliation: "Institute of Molecular and Clinical Ophthalmology Basel (IOB)"
-version: "1.6.1"
-date-released: 2026-06-06
+version: "1.7.0"
+date-released: 2026-06-09
 license: MIT
 repository-code: "https://github.com/FullLengthFanatic/craft"
 keywords:

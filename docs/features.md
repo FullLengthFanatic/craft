@@ -5,35 +5,33 @@ how each is computed. For the algorithmic rationale and threshold justifications
 see [`methods.md`](methods.md). For operational recipes, see
 [`user_guide.md`](user_guide.md).
 
-## The one thing to understand first: geometric vs resolved
+## The one thing to understand first: how the ORF is determined
 
-CRAFT annotates each isoform's ORF in two ways, and both are written to every
-row.
+CRAFT classifies each isoform's ORF in two complementary steps, both written to
+every row.
 
-**Geometric (the original v1.4 view).** The parent transcript's CDS coordinates
-are projected onto the isoform by interval intersection. It is fast and it is
-exact when the isoform's structure matches the parent's, but it never reads the
-spliced nucleotide sequence. It uses the *end of the intersected interval* as
-the stop. Columns: `orf_outcome`, `propagated_cds_*`, `nmd_status`, `nmd_rule`,
-`utr3_length_delta_nt`, and the rest of the v1.4 set.
+**Geometric propagation.** The parent transcript's CDS coordinates are projected
+onto the isoform by interval intersection. Fast, and it gives the structural
+outcome (`orf_outcome`: propagated_intact / disrupted / start_lost / ... ) plus
+the projected CDS (`propagated_cds_*`). It never reads the spliced sequence.
 
-**Resolved (added in v1.5).** CRAFT reconstructs the isoform's own spliced CDS
-from the genome and translates it codon by codon from the parent's start to the
-first in-frame stop. This finds the *real* stop, so it catches frameshifts from
-alternative splice sites, premature stops from exon skips, and introns retained
-inside the CDS. Columns: `resolved_*`, `nmd_status_resolved`, the `*_resolved`
-UTR columns, plus the `uorf_*` and `long_utr3_triggers_nmd` advisory flags.
+**Sequence resolution.** CRAFT reconstructs the isoform's own spliced CDS from
+the genome and translates it codon by codon from the parent's start to the first
+in-frame stop. This finds the *real* stop, catching frameshifts from alternative
+splice sites, premature stops from exon skips, and introns retained inside the
+CDS (`resolved_orf_status`, `resolved_*`, `ptc_introduced`, `intron_retained_in_cds`).
 
-For functional-consequence work, prefer the resolved columns. The geometric
-columns are kept unchanged for speed and for continuity with earlier results.
-The two agree for structurally intact isoforms and diverge exactly where the
-isoform's reading frame departs from the reference, which is where it matters.
+Everything downstream is computed once, from the resolved ORF, so there is a
+**single** NMD call and a single set of UTR columns (no geometric/resolved
+duplication). For orphan isoforms with no reference ORF, the NMD call falls back
+to the de-novo ORF; `nmd_basis` records which ORF was used (`resolved` /
+`denovo` / `none`).
 
 ## Output files
 
 | File | When | Contents |
 | --- | --- | --- |
-| `per_isoform.tsv` | always | One row per isoform, 68 columns. List-valued columns are JSON-encoded. |
+| `per_isoform.tsv` | always | One row per isoform, 60 columns. List-valued columns are JSON-encoded. |
 | `per_isoform.json` | always | Same content as records; list columns stay as lists. |
 | `report.html` | always | Self-contained interactive summary. |
 | `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
@@ -111,11 +109,11 @@ Used only for isoforms with no usable parent (`no_parent`, `no_parent_cds`,
 | `orf_confidence` | categorical | `high`, `medium`, `low`, or `none`. Combines the propagation outcome and the completeness penalty. |
 | `orf_confidence_score` | float | Numeric score in [0, 1] behind the category. Thresholds: `--orf-high-confidence` (0.85), `--orf-medium-confidence` (0.5). |
 
-## NMD: geometric and resolved
+## NMD
 
-The escape-rule cascade (stop in last exon, within 50 nt of the last junction,
-start-proximal, long last exon, else NMD-sensitive) is applied twice: once to
-the geometric stop, once to the resolved stop.
+A single NMD call per isoform, from the resolved ORF stop (de-novo fallback for
+orphans). The escape-rule cascade: stop in the last exon, within 50 nt of the
+last junction, start-proximal (short CDS), long last exon, else NMD-sensitive.
 
 ### Interpreting the NMD columns
 
@@ -134,72 +132,41 @@ machinery). The status takes three values:
   junction, a very short CDS (re-initiation), or a very long last exon. **Escaped
   does not mean full-length or normal** — a 5'-truncated isoform whose stop lands
   in the last exon is "escaped" too. It only means "not an NMD target."
-- **`not_applicable`** = NMD could not be evaluated: no parent CDS, the start
-  codon is not observed, or no in-frame stop was found in the read. **It is the
-  absence of a call, not "safe."**
+- **`not_applicable`** = NMD could not be evaluated: no usable ORF (no parent CDS
+  and no de-novo ORF, the start codon is not observed, or no in-frame stop was
+  found in the read). **It is the absence of a call, not "safe."**
 
-`nmd_rule` / `nmd_rule_resolved` name which rule decided the call (one of the four
-escapes, or `ptc_50nt_rule` when sensitive).
-
-**Geometric vs resolved vs de novo** is the same question with three ways of
-locating the stop:
-
-- **`nmd_status` (geometric)** uses the stop from projecting the parent CDS
-  coordinates onto the isoform (no sequence read). Fast and correct when the CDS
-  matches the reference, but the projected end is not the real stop for a
-  frameshifted / exon-skipped / intron-retaining isoform.
-- **`nmd_status_resolved`** uses the real in-frame stop from translating the
-  isoform's own spliced CDS. It catches the premature stops the geometric
-  projection misses. **Prefer this column** for parent-anchored isoforms.
-- **`nmd_status_denovo`** applies the same rules to the de-novo ORF, for orphan
-  isoforms with no reference CDS (always `low` confidence).
-
-The geometric and resolved calls agree for structurally intact isoforms and
-diverge exactly where the reading frame departs from the reference, which is
-where NMD matters most.
+`nmd_basis` tells you which ORF the call came from: `resolved` (the reference-
+anchored ORF, higher confidence), `denovo` (orphan isoforms with only a predicted
+ORF, always `low` confidence), or `none` (not applicable).
 
 | Column | Type | Meaning |
 | --- | --- | --- |
-| `nmd_status` | categorical | Geometric NMD call: `sensitive`, `escaped`, `not_applicable`. |
+| `nmd_status` | categorical | `sensitive`, `escaped`, or `not_applicable`. |
 | `nmd_rule` | str | Which escape rule fired (or `ptc_50nt_rule` when sensitive). |
-| `stop_to_last_junction_nt` | int / null | mRNA distance from the geometric stop to the last exon-exon junction. |
+| `nmd_confidence` | categorical | `high` (resolved intact ORF), `medium` (resolved but altered: PTC / IR / extension), `low` (de-novo ORF), `none` (not applicable). |
+| `nmd_basis` | str | `resolved` / `denovo` / `none` — which ORF the call used. |
+| `stop_to_last_junction_nt` | int / null | mRNA distance from the stop to the last exon-exon junction. |
 | `last_exon_length_nt` | int / null | Last exon length. |
-| `nmd_confidence` | categorical | `high` for intact propagation, `medium` for disrupted, `none` otherwise. |
-| `nmd_status_resolved` | categorical | NMD call on the **resolved** stop. Prefer this for parent-anchored isoforms. |
-| `nmd_rule_resolved` | str | Escape rule that fired on the resolved stop. |
-| `nmd_confidence_resolved` | categorical | `high` when the resolved ORF is intact, `medium` otherwise, `none` when not applicable. |
-| `nmd_status_denovo` | categorical | NMD call on the **de novo** ORF, for orphan isoforms (`no_parent` / `no_parent_cds` / `start_lost`) that have no reference-anchored stop. `not_applicable` for parent-anchored isoforms and orphans with no de novo ORF. |
-| `nmd_rule_denovo` | str | Escape rule that fired on the de novo stop. |
-| `nmd_confidence_denovo` | categorical | Always `low` when a call is made: the stop comes from a predicted ORF, not a curated reference. |
+| `long_utr3_triggers_nmd` | bool | Advisory: the resolved 3'UTR is longer than `--long-utr3-nt` (default 1000). |
 
-For a single NMD call per isoform, coalesce the resolved call (reference-anchored,
-higher confidence) with the de novo call (orphans):
-
-```python
-df["nmd_call"] = df["nmd_status_resolved"].where(
-    df["nmd_status_resolved"] != "not_applicable", df["nmd_status_denovo"]
-)
-```
-
-Advisory NMD branches (separate from the primary call, noisier by nature):
+Advisory upstream-ORF flags (from the resolved engine, noisier by nature):
 
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `uorf_count` | int | Upstream ORFs fully contained in the 5'UTR (ATG to in-frame stop before the main start). |
 | `uorf_triggers_nmd` | bool | A uORF stop sits more than `--ptc-threshold-nt` upstream of the transcript's last junction (uORF-triggered NMD heuristic). |
-| `long_utr3_triggers_nmd` | bool | The resolved 3'UTR is longer than `--long-utr3-nt` (default 1000). |
 
 ## 3'UTR and 5'UTR
 
+UTR lengths are measured from the resolved ORF (real start and stop).
+
 | Column | Type | Meaning |
 | --- | --- | --- |
-| `iso_utr3_length_nt` | int / null | Isoform 3'UTR length from the geometric stop. |
+| `iso_utr3_length_nt` | int / null | Isoform 3'UTR length (from the resolved stop). Null when no stop was resolved. |
 | `parent_utr3_length_nt` | int / null | Parent 3'UTR length. |
-| `utr3_length_delta_nt` | int / null | Isoform minus parent 3'UTR (geometric). |
+| `utr3_length_delta_nt` | int / null | Isoform minus parent 3'UTR. |
 | `utr3_length_delta_pct` | float / null | Same delta as a percentage of the parent. |
-| `iso_utr3_length_resolved_nt` | int / null | Isoform 3'UTR length from the **resolved** stop. |
-| `utr3_length_delta_resolved_nt` | int / null | Resolved 3'UTR delta vs parent. |
-| `utr3_length_delta_pct_resolved` | float / null | Resolved 3'UTR delta percentage. |
 | `iso_utr5_length_nt` | int / null | Isoform 5'UTR length (upstream of the start codon). Null when the start is not observed. |
 | `parent_utr5_length_nt` | int / null | Parent 5'UTR length. |
 | `utr5_length_delta_nt` | int / null | Isoform minus parent 5'UTR. |
@@ -250,7 +217,7 @@ calls with CPC2 or CPAT.
 | `coding_potential_orf_source` | str | Which ORF was scored: `resolved`, `propagated`, `denovo`, or `none`. |
 
 Use it to gate the orphan tail: a de-novo ORF with `coding_potential_label = coding`
-is a credible novel coding isoform (and its `nmd_status_denovo` call is meaningful),
+is a credible novel coding isoform (and its `nmd_status` / `nmd_basis=denovo` call is meaningful),
 while `noncoding` flags likely lncRNA or spurious ORFs.
 
 ```python
@@ -276,13 +243,13 @@ match rate to stderr.
 
 This is what makes the "novel splice boundary x functional consequence" analysis a
 one-liner: CRAFT supplies the consequence half (`resolved_orf_status`,
-`ptc_introduced`, `nmd_status_resolved`, `nmd_status_denovo`,
+`ptc_introduced`, `nmd_status`,
 `coding_potential_label`) and the passthrough supplies the SQANTI structural class.
 
 ```python
 # NNC isoforms that are NMD substrates with a credible ORF:
 nnc = df[df["structural_category"] == "novel_not_in_catalog"]
-nnc[(nnc["nmd_status_resolved"] == "sensitive") & (nnc["coding_potential_label"] == "coding")]
+nnc[(nnc["nmd_status"] == "sensitive") & (nnc["coding_potential_label"] == "coding")]
 ```
 
 ## Per-cell-type consequence aggregation (v1.5)
@@ -305,7 +272,7 @@ The same table is stored in `annotated.h5ad` under `uns['celltype_consequences']
 | `n_cells` | Cells in the group. |
 | `total_molecules` | Summed counts over all isoforms in the group (the denominator). |
 | `n_isoforms` | Isoforms with non-zero counts in the group. |
-| `frac_nmd_sensitive_resolved` | Fraction of molecules from NMD-sensitive (resolved) isoforms. |
+| `frac_nmd_sensitive` | Fraction of molecules from NMD-sensitive isoforms. |
 | `frac_ptc_introduced` | Fraction from isoforms with a premature stop. |
 | `frac_intron_retained_in_cds` | Fraction from isoforms retaining a CDS intron. |
 | `frac_truncated_5p` / `frac_truncated_3p` / `frac_truncated_both` | Fraction from truncated isoforms. |
@@ -349,10 +316,10 @@ import pandas as pd
 df = pd.read_csv("out/per_isoform.tsv", sep="\t")
 
 # High-confidence NMD substrates, using the sequence-resolved call
-df[(df["nmd_status_resolved"] == "sensitive") & (df["nmd_confidence_resolved"] == "high")]
+df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
 
-# Isoforms where the resolved engine disagrees with the geometric call
-df[df["nmd_status"] != df["nmd_status_resolved"]]
+# NMD substrates called from a predicted (de-novo) ORF, i.e. the orphan tail
+df[(df["nmd_status"] == "sensitive") & (df["nmd_basis"] == "denovo")]
 
 # Premature stops introduced by retained CDS introns
 df[df["intron_retained_in_cds"]]
@@ -363,5 +330,5 @@ lost = df["pfam_lost"].apply(lambda s: len(json.loads(s)) > 0)
 df[lost & df["ptc_introduced"]]
 
 # Alternative 3' ends with a longer UTR (potential APA with regulatory impact)
-df[(df["completeness"] == "alt_3prime_end") & (df["utr3_length_delta_resolved_nt"] > 0)]
+df[(df["completeness"] == "alt_3prime_end") & (df["utr3_length_delta_nt"] > 0)]
 ```

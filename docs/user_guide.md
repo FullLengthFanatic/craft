@@ -150,17 +150,14 @@ read support. The same table is stored in `annotated.h5ad` under
 `uns['celltype_consequences']`. CRAFT does not cluster or call cell types; supply
 a grouping that already exists in `obs`.
 
-### Sequence-resolved vs geometric columns
+### How the ORF is determined
 
-Every run writes two ORF/NMD views. The geometric columns (`orf_outcome`,
-`nmd_status`, `utr3_length_delta_nt`) come from projecting the parent CDS
-coordinates. The resolved columns (`resolved_orf_status`, `nmd_status_resolved`,
-`intron_retained_in_cds`, the `*_resolved` UTR columns) come from translating the
-isoform's own spliced sequence and finding the real stop. Prefer the resolved
-columns for functional-consequence calls; see
-[`features.md`](features.md#the-one-thing-to-understand-first-geometric-vs-resolved).
-For what `sensitive` / `escaped` / `not_applicable` mean and the geometric vs
-resolved vs de-novo distinction, see
+CRAFT classifies each ORF by geometric propagation (`orf_outcome`,
+`propagated_cds_*`) and then reconstructs the isoform's own spliced CDS to find
+the real in-frame stop (`resolved_orf_status`, `intron_retained_in_cds`, ...).
+NMD and UTR consequences are computed once from the resolved ORF, so there is a
+single `nmd_status` (de-novo fallback for orphans, recorded in `nmd_basis`). For
+what `sensitive` / `escaped` / `not_applicable` mean, see
 [Interpreting the NMD columns](features.md#interpreting-the-nmd-columns).
 
 ### With Pfam domain analysis
@@ -477,7 +474,7 @@ if you care about smORFs.
 craft annotate ... --ptc-threshold-nt 55   # some labs use 55 instead of 50
 ```
 
-These drive both the geometric and the resolved NMD calls. `--ptc-threshold-nt`
+These drive the NMD call. `--ptc-threshold-nt`
 also sets the uORF-triggered-NMD window.
 
 ### ORF confidence and long-3'UTR (`--orf-high-confidence` 0.85, `--orf-medium-confidence` 0.5, `--long-utr3-nt` 1000)

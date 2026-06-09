@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-09
+
+Consolidated NMD and a full report overhaul. No paper is planned (GitHub-only),
+so the geometric NMD path is removed outright rather than kept for benchmark
+reproducibility. Output is 68 -> 60 columns.
+
+### Changed (breaking: column contract)
+- **Single NMD call.** `nmd.predict` now computes `nmd_status` / `nmd_rule` /
+  `nmd_confidence` from the resolved ORF stop, falling back to the de-novo ORF
+  stop for orphan isoforms, with a new `nmd_basis` column (`resolved` / `denovo`
+  / `none`). Removed the geometric NMD columns and the `nmd_*_resolved` /
+  `nmd_*_denovo` columns (folded into the canonical names). `nmd.predict_resolved`
+  and `nmd.predict_denovo` are gone.
+- **Single 3'UTR.** `utr3.annotate` now measures the 3'UTR from the resolved stop
+  under the canonical `iso_utr3_length_nt` / `utr3_length_delta_*` names; the
+  `*_resolved` 3'UTR columns and `utr3.annotate_resolved` are removed. 5'UTR
+  metrics, `long_utr3_triggers_nmd`, and the poly(A) motif scan are merged into
+  the one `annotate()`.
+- `coding_potential` / `celltype` consequence flag reads `nmd_status`
+  (`frac_nmd_sensitive_resolved` -> `frac_nmd_sensitive` in the per-cell-type table).
+- The geometric propagation columns (`orf_outcome`, `propagated_cds_*`,
+  `resolved_orf_status`, ...) are unchanged: propagation is the method and the
+  anchor the resolution builds on, not a redundant NMD view.
+
+### Changed (HTML report overhaul)
+- `report/plots.py` + `report/html.py` rewritten: a shared plotly theme, a
+  semantic palette (red = NMD-sensitive / PTC / intron-retained, green = intact /
+  coding / escaped, grey = not-applicable / novel), horizontal bars with count +
+  percent labels, a KPI strip, a functional-consequence cascade funnel, coding-
+  potential and 3'UTR-delta histograms, and notable-findings tables for
+  NMD-sensitive and intron-retained isoforms.
+
+### Benchmarks
+- Bench 3 re-run with CRAFT regenerated from scratch on the GENCODE v45 universe
+  using the consolidated resolved `nmd_status`: NMD-sensitive transcripts are
+  enriched among UPF1-KD-upregulated transcripts at OR 1.455, one-sided
+  p = 3.0e-15 (vs OR 1.457, p = 2.4e-15 for the former geometric label). The
+  numbers match because GENCODE reference transcripts self-match (resolved stop =
+  geometric stop); the de-novo fallback resolves 190 transcripts that were
+  previously `not_applicable`. Bench 1/2 use the unchanged propagation columns;
+  cbench is NMD-agnostic. salmon quant reused from cache.
+
 ### Documentation
 - `docs/features.md`: added an "Interpreting the NMD columns" glossary defining
   `sensitive` / `escaped` / `not_applicable` in plain language (with the two
