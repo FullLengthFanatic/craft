@@ -1,7 +1,9 @@
-"""3' UTR feature consequences: length delta vs parent and poly(A) signal motif scan.
+"""3' and 5' UTR feature consequences: length deltas vs parent + poly(A) motif scan.
 
-Internal priming detection stays in `tecap`; this module only reports structural and
-sequence features of the 3' UTR.
+UTR lengths are measured from the **resolved** ORF (the real in-frame start and
+stop), so the columns are single, canonical names (no geometric/resolved split).
+Internal priming detection stays in `tecap`; this module only reports structural
+and sequence features of the UTRs.
 """
 
 from pathlib import Path
@@ -10,8 +12,6 @@ import numpy as np
 import pandas as pd
 import pyranges as pr
 import pysam
-
-from craft.core.orf.propagation import ORFOutcome
 
 POLYA_SIGNALS: tuple[str, ...] = (
     "AATAAA",
@@ -28,6 +28,13 @@ POLYA_SIGNALS: tuple[str, ...] = (
 )
 
 _RC_TABLE = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+# Resolved-ORF statuses (from craft.core.orf.resolve) that carry a real stop.
+_RESOLVED_WITH_STOP = frozenset(
+    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+)
+
+LONG_UTR3_NT = 1000
 
 
 def _reverse_complement(seq: str) -> str:
@@ -198,191 +205,61 @@ def _extract_utr3_sequence(
     return sequence
 
 
+_COLUMNS = [
+    "transcript_id",
+    "iso_utr3_length_nt",
+    "parent_utr3_length_nt",
+    "utr3_length_delta_nt",
+    "utr3_length_delta_pct",
+    "iso_utr5_length_nt",
+    "parent_utr5_length_nt",
+    "utr5_length_delta_nt",
+    "utr5_length_delta_pct",
+    "long_utr3_triggers_nmd",
+    "polya_signal_motif",
+    "polya_signal_distance_nt",
+]
+
+
 def annotate(
-    classified: pr.PyRanges,
-    propagated: pd.DataFrame,
-    reference: pr.PyRanges,
-    genome_fasta: Path | None = None,
-) -> pd.DataFrame:
-    """3' UTR feature consequences per isoform.
-
-    Computes the isoform's 3' UTR length, its parent's 3' UTR length (when a
-    parent transcript and parent CDS are available), the absolute and percent
-    deltas, and, if ``genome_fasta`` is provided, the strongest poly(A) signal
-    motif in the isoform's 3' UTR plus its distance from the 3' end.
-
-    Args:
-        classified: PyRanges of isoform exons with ``transcript_id``, ``Strand``.
-        propagated: DataFrame returned by :func:`craft.core.orf.propagation.propagate`.
-        reference: Reference PyRanges with a ``Feature`` column (exon / CDS rows).
-        genome_fasta: Optional path to an indexed genome FASTA. If omitted, the
-            poly(A) scan is skipped.
-
-    Returns:
-        DataFrame with one row per isoform and columns: ``transcript_id``,
-        ``iso_utr3_length_nt``, ``parent_utr3_length_nt``, ``utr3_length_delta_nt``,
-        ``utr3_length_delta_pct``, ``polya_signal_motif``, ``polya_signal_distance_nt``.
-    """
-    cols = [
-        "transcript_id",
-        "iso_utr3_length_nt",
-        "parent_utr3_length_nt",
-        "utr3_length_delta_nt",
-        "utr3_length_delta_pct",
-        "polya_signal_motif",
-        "polya_signal_distance_nt",
-    ]
-    if propagated.empty or len(classified) == 0:
-        return pd.DataFrame(columns=cols)
-
-    iso_df = classified.df
-    iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
-    iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
-
-    ref_df = reference.df
-    if "Feature" in ref_df.columns and "transcript_id" in ref_df.columns:
-        parent_exons_all = ref_df[ref_df["Feature"] == "exon"]
-        parent_cds_all = ref_df[ref_df["Feature"] == "CDS"]
-        parent_exons_by_tx = {
-            tx: g for tx, g in parent_exons_all.groupby("transcript_id", sort=False)
-        }
-        parent_cds_by_tx = {
-            tx: g for tx, g in parent_cds_all.groupby("transcript_id", sort=False)
-        }
-    else:
-        parent_exons_by_tx = {}
-        parent_cds_by_tx = {}
-
-    genome = pysam.FastaFile(str(genome_fasta)) if genome_fasta is not None else None
-
-    try:
-        rows: list[dict] = []
-        for _, prop_row in propagated.iterrows():
-            tx_id = prop_row["transcript_id"]
-            outcome = ORFOutcome(prop_row["orf_outcome"])
-            intervals = prop_row["propagated_cds_intervals"]
-            stop_covered = bool(prop_row["stop_codon_covered"])
-            parent_tx = prop_row["parent_tx_id"]
-
-            applicable = (
-                outcome in (ORFOutcome.PROPAGATED_INTACT, ORFOutcome.DISRUPTED)
-                and stop_covered
-                and intervals
-            )
-            if not applicable:
-                rows.append(
-                    {
-                        "transcript_id": tx_id,
-                        "iso_utr3_length_nt": None,
-                        "parent_utr3_length_nt": None,
-                        "utr3_length_delta_nt": None,
-                        "utr3_length_delta_pct": None,
-                        "polya_signal_motif": "",
-                        "polya_signal_distance_nt": None,
-                    }
-                )
-                continue
-
-            strand = str(iso_strand[tx_id])
-            iso_exons = iso_exons_by_tx[tx_id]
-            iso_stop = _iso_stop_pos(intervals, strand)
-            iso_utr_len = _utr3_length(iso_exons, iso_stop, strand)
-
-            parent_utr_len: int | None = None
-            if (
-                parent_tx
-                and parent_tx in parent_exons_by_tx
-                and parent_tx in parent_cds_by_tx
-            ):
-                parent_exons = parent_exons_by_tx[parent_tx]
-                parent_cds = parent_cds_by_tx[parent_tx]
-                parent_stop = _parent_stop_pos(parent_cds, strand)
-                parent_utr_len = _utr3_length(parent_exons, parent_stop, strand)
-
-            delta: int | None = None
-            delta_pct: float | None = None
-            if parent_utr_len is not None:
-                delta = iso_utr_len - parent_utr_len
-                if parent_utr_len > 0:
-                    delta_pct = delta / parent_utr_len * 100.0
-
-            polya_motif = ""
-            polya_dist: int | None = None
-            if genome is not None and iso_utr_len > 0:
-                seq = _extract_utr3_sequence(iso_exons, iso_stop, strand, genome)
-                sig = polya_signal(seq)
-                polya_motif = str(sig["motif"])
-                if polya_motif:
-                    polya_dist = int(sig["distance_from_3p_end"])
-
-            rows.append(
-                {
-                    "transcript_id": tx_id,
-                    "iso_utr3_length_nt": iso_utr_len,
-                    "parent_utr3_length_nt": parent_utr_len,
-                    "utr3_length_delta_nt": delta,
-                    "utr3_length_delta_pct": delta_pct,
-                    "polya_signal_motif": polya_motif,
-                    "polya_signal_distance_nt": polya_dist,
-                }
-            )
-        return pd.DataFrame(rows, columns=cols)
-    finally:
-        if genome is not None:
-            genome.close()
-
-
-# Statuses (from craft.core.orf.resolve) that carry a real resolved stop.
-_RESOLVED_WITH_STOP = frozenset(
-    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
-)
-
-LONG_UTR3_NT = 1000
-
-
-def annotate_resolved(
     classified: pr.PyRanges,
     resolved: pd.DataFrame,
     reference: pr.PyRanges,
+    genome_fasta: Path | None = None,
     long_utr3_nt: int = LONG_UTR3_NT,
 ) -> pd.DataFrame:
-    """UTR consequences from the sequence-resolved ORF, plus 5'UTR metrics.
+    """UTR consequences per isoform, measured from the resolved ORF.
 
-    Resolved 3'UTR length is measured from the true (resolved) stop; 5'UTR length
-    is measured upstream of the start codon (symmetric to the 3'UTR delta). The
-    geometric ``utr3_*`` columns from :func:`annotate` are left untouched.
+    3'UTR length/delta are measured from the resolved (real in-frame) stop; 5'UTR
+    length/delta from the start codon. When ``genome_fasta`` is given, the iso's
+    3'UTR is scanned for the strongest canonical poly(A) signal.
 
     Args:
-        classified: PyRanges of isoform exons (``transcript_id``, ``Strand``).
+        classified: PyRanges of isoform exons (``transcript_id``, ``Strand``,
+            ``parent_tx_id``).
         resolved: DataFrame from :func:`craft.core.orf.resolve.resolve`.
         reference: Reference PyRanges with a ``Feature`` column (exon / CDS rows).
+        genome_fasta: Optional indexed genome FASTA; if omitted the poly(A) scan
+            is skipped.
         long_utr3_nt: 3'UTR length above which ``long_utr3_triggers_nmd`` is set.
 
     Returns:
-        DataFrame with ``transcript_id`` plus ``iso_utr3_length_resolved_nt``,
-        ``utr3_length_delta_resolved_nt``, ``utr3_length_delta_pct_resolved``,
-        ``long_utr3_triggers_nmd``, ``iso_utr5_length_nt``,
-        ``parent_utr5_length_nt``, ``utr5_length_delta_nt``,
-        ``utr5_length_delta_pct``.
+        DataFrame with ``transcript_id`` plus ``iso_utr3_length_nt``,
+        ``parent_utr3_length_nt``, ``utr3_length_delta_nt``, ``utr3_length_delta_pct``,
+        ``iso_utr5_length_nt``, ``parent_utr5_length_nt``, ``utr5_length_delta_nt``,
+        ``utr5_length_delta_pct``, ``long_utr3_triggers_nmd``, ``polya_signal_motif``,
+        ``polya_signal_distance_nt``.
     """
-    cols = [
-        "transcript_id",
-        "iso_utr3_length_resolved_nt",
-        "utr3_length_delta_resolved_nt",
-        "utr3_length_delta_pct_resolved",
-        "long_utr3_triggers_nmd",
-        "iso_utr5_length_nt",
-        "parent_utr5_length_nt",
-        "utr5_length_delta_nt",
-        "utr5_length_delta_pct",
-    ]
-    if resolved.empty or len(classified) == 0:
-        return pd.DataFrame(columns=cols)
+    if len(classified) == 0:
+        return pd.DataFrame(columns=_COLUMNS)
 
     iso_df = classified.df
     iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
     iso_parent = iso_df.groupby("transcript_id")["parent_tx_id"].first().to_dict()
     iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+    resolved_by_tx: dict = {}
+    if resolved is not None and not resolved.empty:
+        resolved_by_tx = {r["transcript_id"]: r for _, r in resolved.iterrows()}
 
     ref_df = reference.df
     parent_exons_by_tx = {
@@ -392,55 +269,67 @@ def annotate_resolved(
         tx: g for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False)
     }
 
-    rows: list[dict] = []
-    for _, res_row in resolved.iterrows():
-        tx_id = res_row["transcript_id"]
-        strand = str(iso_strand.get(tx_id, "+"))
-        iso_exons = iso_exons_by_tx.get(tx_id)
-        parent_tx = iso_parent.get(tx_id, "")
-        parent_cds = parent_cds_by_tx.get(parent_tx)
-        parent_exons = parent_exons_by_tx.get(parent_tx)
+    genome = pysam.FastaFile(str(genome_fasta)) if genome_fasta is not None else None
+    try:
+        rows: list[dict] = []
+        for tx_id, iso_exons in iso_exons_by_tx.items():
+            res_row = resolved_by_tx.get(tx_id)
+            strand = str(iso_strand.get(tx_id, "+"))
+            parent_tx = iso_parent.get(tx_id, "")
+            parent_cds = parent_cds_by_tx.get(parent_tx)
+            parent_exons = parent_exons_by_tx.get(parent_tx)
+            status = (
+                str(res_row["resolved_orf_status"]) if res_row is not None else "resolution_failed"
+            )
 
-        row = dict.fromkeys(cols)
-        row["transcript_id"] = tx_id
-        row["long_utr3_triggers_nmd"] = False
+            row = dict.fromkeys(_COLUMNS)
+            row["transcript_id"] = tx_id
+            row["long_utr3_triggers_nmd"] = False
+            row["polya_signal_motif"] = ""
 
-        # Resolved 3'UTR (only when a real stop was found).
-        has_stop = (
-            str(res_row["resolved_orf_status"]) in _RESOLVED_WITH_STOP
-            and bool(res_row["stop_in_transcript"])
-            and res_row["resolved_cds_intervals"]
-        )
-        if has_stop and iso_exons is not None:
-            iso_stop = _iso_stop_pos(res_row["resolved_cds_intervals"], strand)
-            iso_utr3 = _utr3_length(iso_exons, iso_stop, strand)
-            row["iso_utr3_length_resolved_nt"] = iso_utr3
-            row["long_utr3_triggers_nmd"] = iso_utr3 > long_utr3_nt
-            if parent_cds is not None and parent_exons is not None:
-                parent_stop = _parent_stop_pos(parent_cds, strand)
-                parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
-                row["utr3_length_delta_resolved_nt"] = iso_utr3 - parent_utr3
-                if parent_utr3 > 0:
-                    row["utr3_length_delta_pct_resolved"] = (
-                        (iso_utr3 - parent_utr3) / parent_utr3 * 100.0
-                    )
+            has_stop = (
+                res_row is not None
+                and status in _RESOLVED_WITH_STOP
+                and bool(res_row["stop_in_transcript"])
+                and res_row["resolved_cds_intervals"]
+            )
+            if has_stop and iso_exons is not None:
+                iso_stop = _iso_stop_pos(res_row["resolved_cds_intervals"], strand)
+                iso_utr3 = _utr3_length(iso_exons, iso_stop, strand)
+                row["iso_utr3_length_nt"] = iso_utr3
+                row["long_utr3_triggers_nmd"] = iso_utr3 > long_utr3_nt
+                if parent_cds is not None and parent_exons is not None:
+                    parent_stop = _parent_stop_pos(parent_cds, strand)
+                    parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
+                    row["parent_utr3_length_nt"] = parent_utr3
+                    row["utr3_length_delta_nt"] = iso_utr3 - parent_utr3
+                    if parent_utr3 > 0:
+                        row["utr3_length_delta_pct"] = (
+                            (iso_utr3 - parent_utr3) / parent_utr3 * 100.0
+                        )
+                if genome is not None and iso_utr3 > 0:
+                    seq = _extract_utr3_sequence(iso_exons, iso_stop, strand, genome)
+                    sig = polya_signal(seq)
+                    motif = str(sig["motif"])
+                    row["polya_signal_motif"] = motif
+                    if motif:
+                        row["polya_signal_distance_nt"] = int(sig["distance_from_3p_end"])
 
-        # 5'UTR (only when the start codon is observed in the isoform).
-        if (
-            parent_cds is not None
-            and iso_exons is not None
-            and str(res_row["resolved_orf_status"]) != "resolution_failed"
-        ):
-            start_pos = _start_pos(parent_cds, strand)
-            iso_utr5 = _utr5_length(iso_exons, start_pos, strand)
-            row["iso_utr5_length_nt"] = iso_utr5
-            if parent_exons is not None:
-                parent_utr5 = _utr5_length(parent_exons, start_pos, strand)
-                row["parent_utr5_length_nt"] = parent_utr5
-                row["utr5_length_delta_nt"] = iso_utr5 - parent_utr5
-                if parent_utr5 > 0:
-                    row["utr5_length_delta_pct"] = (
-                        (iso_utr5 - parent_utr5) / parent_utr5 * 100.0
-                    )
-        rows.append(row)
-    return pd.DataFrame(rows, columns=cols)
+            # 5'UTR: only when the start codon is observed (resolution succeeded).
+            if parent_cds is not None and iso_exons is not None and status != "resolution_failed":
+                start_pos = _start_pos(parent_cds, strand)
+                iso_utr5 = _utr5_length(iso_exons, start_pos, strand)
+                row["iso_utr5_length_nt"] = iso_utr5
+                if parent_exons is not None:
+                    parent_utr5 = _utr5_length(parent_exons, start_pos, strand)
+                    row["parent_utr5_length_nt"] = parent_utr5
+                    row["utr5_length_delta_nt"] = iso_utr5 - parent_utr5
+                    if parent_utr5 > 0:
+                        row["utr5_length_delta_pct"] = (
+                            (iso_utr5 - parent_utr5) / parent_utr5 * 100.0
+                        )
+            rows.append(row)
+        return pd.DataFrame(rows, columns=_COLUMNS)
+    finally:
+        if genome is not None:
+            genome.close()

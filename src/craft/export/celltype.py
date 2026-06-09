@@ -27,7 +27,7 @@ import scipy.sparse as sp
 # Consequence class -> (required column, predicate over that column's Series).
 # Order here is the output column order.
 _CONSEQUENCES: dict[str, tuple[str, callable]] = {
-    "nmd_sensitive_resolved": ("nmd_status_resolved", lambda s: s == "sensitive"),
+    "nmd_sensitive": ("nmd_status", lambda s: s == "sensitive"),
     "ptc_introduced": ("ptc_introduced", lambda s: s.fillna(False).astype(bool)),
     "intron_retained_in_cds": ("intron_retained_in_cds", lambda s: s.fillna(False).astype(bool)),
     "truncated_5p": ("completeness", lambda s: s == "truncated_5p"),

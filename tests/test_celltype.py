@@ -14,7 +14,7 @@ def _per_isoform() -> pd.DataFrame:
         {
             "transcript_id": ["iso1", "iso2", "iso3"],
             "completeness": ["full_length", "truncated_5p", "alt_3prime_end"],
-            "nmd_status_resolved": ["sensitive", "escaped", "not_applicable"],
+            "nmd_status": ["sensitive", "escaped", "not_applicable"],
             "ptc_introduced": [True, False, False],
             "intron_retained_in_cds": [False, False, False],
             "pfam_lost": [[], ["PF00001"], []],
@@ -49,14 +49,14 @@ def test_happy_path_molecule_weighted_fractions(tmp_path) -> None:
     assert a["n_cells"] == 2
     assert a["total_molecules"] == 30
     assert a["n_isoforms"] == 2
-    assert a["frac_nmd_sensitive_resolved"] == pytest.approx(20 / 30)
+    assert a["frac_nmd_sensitive"] == pytest.approx(20 / 30)
     assert a["frac_ptc_introduced"] == pytest.approx(20 / 30)
     assert a["frac_alt_3prime_end"] == pytest.approx(10 / 30)
     assert a["frac_truncated_5p"] == pytest.approx(0.0)
     b = _grp(out, "B")
     assert b["frac_truncated_5p"] == pytest.approx(16 / 20)
     assert b["frac_domain_lost"] == pytest.approx(16 / 20)
-    assert b["frac_nmd_sensitive_resolved"] == pytest.approx(0.0)
+    assert b["frac_nmd_sensitive"] == pytest.approx(0.0)
     assert (tmp_path / "ct.tsv").exists()
     assert adata.uns["celltype_consequences"]["group_by"] == "cell_type"
 
@@ -89,7 +89,7 @@ def test_zero_count_group_yields_nan_fractions() -> None:
     b = _grp(out, "B")
     assert b["total_molecules"] == 0
     assert b["n_cells"] == 2
-    assert np.isnan(b["frac_nmd_sensitive_resolved"])
+    assert np.isnan(b["frac_nmd_sensitive"])
 
 
 def test_isoform_in_counts_not_in_per_isoform_counts_in_total() -> None:

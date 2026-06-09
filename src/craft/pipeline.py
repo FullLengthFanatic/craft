@@ -16,8 +16,6 @@ import pysam
 from craft.core.coding_potential import score_isoforms as coding_potential_score
 from craft.core.completeness import Completeness, classify
 from craft.core.nmd import predict as nmd_predict
-from craft.core.nmd import predict_denovo as nmd_predict_denovo
-from craft.core.nmd import predict_resolved as nmd_predict_resolved
 from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
 from craft.core.orf.propagation import ORFOutcome, propagate
@@ -25,7 +23,6 @@ from craft.core.orf.resolve import resolve as resolve_orf
 from craft.core.pfam import scan as pfam_scan
 from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
 from craft.core.utr3 import annotate as utr3_annotate
-from craft.core.utr3 import annotate_resolved as utr3_annotate_resolved
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
 from craft.export.celltype import aggregate_consequences
@@ -53,6 +50,7 @@ _PFAM_COLUMNS = (
 )
 
 _OUTPUT_COLUMNS = [
+    # Structural completeness + parent
     "transcript_id",
     "completeness",
     "parent_tx_id",
@@ -60,40 +58,15 @@ _OUTPUT_COLUMNS = [
     "parent_gene_name",
     "shared_junctions",
     "parent_overlap_bp",
+    "has_cds_bearing_parent",
+    # ORF: geometric propagation
     "orf_outcome",
     "propagated_cds_bp",
     "parent_cds_bp",
     "start_codon_covered",
     "stop_codon_covered",
     "propagated_cds_intervals",
-    "denovo_orf_found",
-    "denovo_cds_bp",
-    "denovo_orf_aa_length",
-    "denovo_start_codon",
-    "denovo_stop_codon",
-    "denovo_cds_intervals",
-    "orf_confidence",
-    "orf_confidence_score",
-    "nmd_status",
-    "nmd_rule",
-    "stop_to_last_junction_nt",
-    "last_exon_length_nt",
-    "nmd_confidence",
-    "iso_utr3_length_nt",
-    "parent_utr3_length_nt",
-    "utr3_length_delta_nt",
-    "utr3_length_delta_pct",
-    "polya_signal_motif",
-    "polya_signal_distance_nt",
-    "polya_evidence_source",
-    "polya_db_site_id",
-    "iso_pfam_domains",
-    "parent_pfam_domains",
-    "pfam_preserved",
-    "pfam_lost",
-    "pfam_gained",
-    # v1.5 additive columns (existing columns above are unchanged).
-    "has_cds_bearing_parent",
+    # ORF: sequence resolution
     "resolved_orf_status",
     "resolved_stop_pos",
     "resolved_cds_bp",
@@ -105,20 +78,45 @@ _OUTPUT_COLUMNS = [
     "stop_in_transcript",
     "uorf_count",
     "uorf_triggers_nmd",
-    "nmd_status_resolved",
-    "nmd_rule_resolved",
-    "nmd_confidence_resolved",
-    "iso_utr3_length_resolved_nt",
-    "utr3_length_delta_resolved_nt",
-    "utr3_length_delta_pct_resolved",
+    # ORF: de novo (orphans)
+    "denovo_orf_found",
+    "denovo_cds_bp",
+    "denovo_orf_aa_length",
+    "denovo_start_codon",
+    "denovo_stop_codon",
+    "denovo_cds_intervals",
+    # ORF confidence
+    "orf_confidence",
+    "orf_confidence_score",
+    # NMD (single call: resolved, de-novo fallback for orphans)
+    "nmd_status",
+    "nmd_rule",
+    "nmd_confidence",
+    "nmd_basis",
+    "stop_to_last_junction_nt",
+    "last_exon_length_nt",
     "long_utr3_triggers_nmd",
+    # UTRs
+    "iso_utr3_length_nt",
+    "parent_utr3_length_nt",
+    "utr3_length_delta_nt",
+    "utr3_length_delta_pct",
     "iso_utr5_length_nt",
     "parent_utr5_length_nt",
     "utr5_length_delta_nt",
     "utr5_length_delta_pct",
-    "nmd_status_denovo",
-    "nmd_rule_denovo",
-    "nmd_confidence_denovo",
+    # Poly(A)
+    "polya_signal_motif",
+    "polya_signal_distance_nt",
+    "polya_evidence_source",
+    "polya_db_site_id",
+    # Pfam
+    "iso_pfam_domains",
+    "parent_pfam_domains",
+    "pfam_preserved",
+    "pfam_lost",
+    "pfam_gained",
+    # Coding potential
     "coding_potential_score",
     "coding_potential_label",
     "coding_potential_orf_source",
@@ -355,12 +353,10 @@ def _fill_resolved_defaults(df: pd.DataFrame) -> None:
     """Fill defaults for the resolved columns in place (covers the no-genome path)."""
     str_defaults = {
         "resolved_orf_status": "resolution_failed",
-        "nmd_status_resolved": "not_applicable",
-        "nmd_rule_resolved": "",
-        "nmd_confidence_resolved": "none",
-        "nmd_status_denovo": "not_applicable",
-        "nmd_rule_denovo": "",
-        "nmd_confidence_denovo": "none",
+        "nmd_status": "not_applicable",
+        "nmd_rule": "",
+        "nmd_confidence": "none",
+        "nmd_basis": "none",
     }
     for col, default in str_defaults.items():
         if col in df.columns:
@@ -502,61 +498,25 @@ def run_annotate(
     else:
         denovo_df = _empty_denovo()
 
-    nmd_df = nmd_predict(
-        classified,
-        propagated,
-        ptc_threshold_nt=ptc_threshold_nt,
-        start_proximal_nt=start_proximal_nt,
-        long_last_exon_nt=long_last_exon_nt,
-    )
-    utr3_df = utr3_annotate(classified, propagated, reference, genome_fasta=genome_path)
-
-    # Sequence-level ORF resolution + its resolved consumers (additive columns).
+    # Sequence-level ORF resolution: the basis for the NMD and UTR calls.
     if genome_path is not None:
         resolve_df = resolve_orf(
             classified, propagated, reference, genome_path, ptc_threshold_nt=ptc_threshold_nt
         )
-        nmd_resolved_df = nmd_predict_resolved(
-            classified,
-            resolve_df,
-            ptc_threshold_nt=ptc_threshold_nt,
-            start_proximal_nt=start_proximal_nt,
-            long_last_exon_nt=long_last_exon_nt,
-        )
-        utr3_resolved_df = utr3_annotate_resolved(
-            classified, resolve_df, reference, long_utr3_nt=long_utr3_nt
-        )
     else:
         resolve_df = pd.DataFrame(columns=["transcript_id", *_RESOLVE_COLUMNS])
-        nmd_resolved_df = pd.DataFrame(
-            columns=[
-                "transcript_id",
-                "nmd_status_resolved",
-                "nmd_rule_resolved",
-                "nmd_confidence_resolved",
-            ]
-        )
-        utr3_resolved_df = pd.DataFrame(
-            columns=[
-                "transcript_id",
-                "iso_utr3_length_resolved_nt",
-                "utr3_length_delta_resolved_nt",
-                "utr3_length_delta_pct_resolved",
-                "long_utr3_triggers_nmd",
-                "iso_utr5_length_nt",
-                "parent_utr5_length_nt",
-                "utr5_length_delta_nt",
-                "utr5_length_delta_pct",
-            ]
-        )
 
-    # NMD on the de novo ORF, for orphan isoforms with no reference-anchored stop.
-    nmd_denovo_df = nmd_predict_denovo(
+    # Single NMD call from the resolved stop, de-novo fallback for orphans.
+    nmd_df = nmd_predict(
         classified,
+        resolve_df,
         denovo_df,
         ptc_threshold_nt=ptc_threshold_nt,
         start_proximal_nt=start_proximal_nt,
         long_last_exon_nt=long_last_exon_nt,
+    )
+    utr3_df = utr3_annotate(
+        classified, resolve_df, reference, genome_fasta=genome_path, long_utr3_nt=long_utr3_nt
     )
 
     per_tx = classified.df.groupby("transcript_id").first().reset_index()[
@@ -574,12 +534,9 @@ def run_annotate(
         merged["denovo_cds_intervals"] = [[] for _ in range(n)]
         merged["denovo_start_codon"] = [""] * n
         merged["denovo_stop_codon"] = [""] * n
+    merged = merged.merge(resolve_df, on="transcript_id", how="left")
     merged = merged.merge(nmd_df, on="transcript_id", how="left")
     merged = merged.merge(utr3_df, on="transcript_id", how="left")
-    merged = merged.merge(resolve_df, on="transcript_id", how="left")
-    merged = merged.merge(nmd_resolved_df, on="transcript_id", how="left")
-    merged = merged.merge(utr3_resolved_df, on="transcript_id", how="left")
-    merged = merged.merge(nmd_denovo_df, on="transcript_id", how="left")
     _fill_resolved_defaults(merged)
 
     completeness_default = Completeness.NOVEL_NO_MATCH.value
