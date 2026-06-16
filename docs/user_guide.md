@@ -125,6 +125,32 @@ The counts file's `var_names` must match the iso GTF's `transcript_id`s.
 Isoforms in the counts that aren't in the iso GTF are dropped; isoforms in
 the iso GTF that aren't in the counts get zero-filled count columns.
 
+With `--counts`, the per-isoform output gains three recurrence columns:
+`total_count` (UMI-corrected molecules per isoform summed across cells),
+`n_cells_detected` (number of cells with the isoform; depth-stable), and
+`isoform_fraction_within_gene` (relative abundance within the parent gene).
+These are more robust for filtering than raw read counts because they are
+orthogonal to per-cell sequencing depth.
+
+### With cell whitelist
+
+To restrict recurrence computation to called cells (excluding ambient droplets),
+pass a text file of barcodes:
+
+```bash
+craft annotate \
+    --isoforms  iso.gtf \
+    --reference reference.gtf \
+    --genome    genome.fa \
+    --counts    counts.h5ad \
+    --cell-whitelist called_cells.txt \
+    --output-dir out/
+```
+
+The whitelist is one barcode per line. Without `--cell-whitelist`, recurrence
+metrics include every barcode in the count matrix. Recommend deriving the
+whitelist from the cell-calling algorithm's knee plot (e.g. droplet QC).
+
 ### Per-cell-type consequence fractions
 
 Add `--group-by OBS_COLUMN` (with `--counts`) to summarise functional

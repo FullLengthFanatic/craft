@@ -39,6 +39,15 @@ def cli() -> None:
     help="Optional per-cell isoform count matrix (h5ad / MTX) for sc workflows.",
 )
 @click.option(
+    "--cell-whitelist",
+    "cell_whitelist_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional text file of called-cell barcodes (one per line). With --counts, "
+    "total_count / n_cells_detected are computed over these cells only; otherwise "
+    "every barcode in the matrix is used (includes ambient droplets).",
+)
+@click.option(
     "--pfam-hmm",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
@@ -159,6 +168,7 @@ def annotate(
     reference: Path,
     genome: Path,
     counts: Path | None,
+    cell_whitelist_path: Path | None,
     pfam_hmm: Path | None,
     polya_atlas: Path | None,
     output_dir: Path,
@@ -183,6 +193,7 @@ def annotate(
         output_dir=output_dir,
         genome_path=genome,
         counts_path=counts,
+        cell_whitelist_path=cell_whitelist_path,
         pfam_hmm_path=pfam_hmm,
         polya_atlas_path=polya_atlas,
         tolerance=tolerance,

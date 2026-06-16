@@ -43,7 +43,10 @@ craft annotate \
 
 Optional flags:
 
-- `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`.
+- `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`
+  and recurrence columns (`total_count`, `n_cells_detected`, `isoform_fraction_within_gene`).
+- `--cell-whitelist PATH` called-cell barcodes (one per line); with `--counts`,
+  recurrence metrics are computed over these cells only; otherwise over every barcode.
 - `--group-by obs_column` with `--counts`, aggregates functional consequences per
   cell group into `per_celltype_consequence.tsv`.
 - `--pfam-hmm Pfam-A.hmm` enables Pfam domain preservation analysis (slow with
@@ -84,7 +87,7 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 | File                          | Description                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `per_isoform.tsv`             | per-iso annotation table, 60 columns, list columns JSON-encoded             |
+| `per_isoform.tsv`             | per-iso annotation table, 63 columns, list columns JSON-encoded             |
 | `per_isoform.json`            | same content as records; list columns stay as lists                         |
 | `report.html`                 | self-contained interactive report (summary cards + plotly + table)          |
 | `annotated.h5ad`              | AnnData with iso annotations in `var`, per-cell counts in `X` (if given)    |
@@ -103,6 +106,9 @@ fallback for orphans recorded in `nmd_basis`).
 ```python
 import pandas as pd
 df = pd.read_csv("out/per_isoform.tsv", sep="\t")
+
+# recurrent isoforms (with --counts)
+df[df["n_cells_detected"] >= 3]
 
 # trustworthy ORF calls
 df[df["orf_confidence"].isin(["high", "medium"])]
@@ -151,7 +157,7 @@ premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 
 ## Status
 
-v1.7.0. The pipeline runs end-to-end on real long-read isoform GTFs at
+v1.8.0. The pipeline runs end-to-end on real long-read isoform GTFs at
 full-genome scale. Validated on a PacBio Iso-Seq sample (chr22 subset and the
 full bcM0003 sample, ~698k isoforms). Methods paper in preparation: benchmarking
 reference-isoform ORF propagation vs de-novo prediction on simulated truncated

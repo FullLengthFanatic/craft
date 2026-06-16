@@ -31,7 +31,7 @@ to the de-novo ORF; `nmd_basis` records which ORF was used (`resolved` /
 
 | File | When | Contents |
 | --- | --- | --- |
-| `per_isoform.tsv` | always | One row per isoform, 60 columns. List-valued columns are JSON-encoded. |
+| `per_isoform.tsv` | always | One row per isoform, 63 columns. List-valued columns are JSON-encoded. |
 | `per_isoform.json` | always | Same content as records; list columns stay as lists. |
 | `report.html` | always | Self-contained interactive summary. |
 | `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
@@ -227,6 +227,23 @@ df[(df["coding_potential_orf_source"] == "denovo") & (df["coding_potential_label
 df[(df["orf_outcome"] == "no_parent_cds") & (df["coding_potential_label"] == "noncoding")]
 ```
 
+## Per-cell recurrence (v1.8)
+
+Populated only with `--counts` and `--cell-whitelist` (optional). These columns
+measure isoform support across cells in depth-stable fashion: raw molecule counts
+are sensitive to per-cell sequencing depth, while cell recurrence (the count of cells
+with at least one molecule) is orthogonal to depth. Filtering on these columns
+is more robust than thresholding total counts.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `total_count` | int / null | Total UMI-corrected molecules for the isoform, summed across cells. Computed over called cells when `--cell-whitelist` is given; over every barcode (including ambient droplets) otherwise. Null when `--counts` is absent or the isoform is not in the count matrix. |
+| `n_cells_detected` | int / null | Number of cells with at least one molecule of the isoform, over the same cell set as `total_count`. A depth-stable recurrence signal: an isoform in many independent cells is supported regardless of per-cell sequencing depth. Null without `--counts`. |
+| `isoform_fraction_within_gene` | float / null | `total_count` divided by the summed `total_count` of all isoforms sharing the same `parent_gene_id`. A relative-abundance signal; the ratio cancels depth variation. Null for isoforms without a parent gene or without measured counts. |
+
+**Recommended filtering:** `n_cells_detected >= 3` selects isoforms recurrent
+across at least three independent cells, robust to depth-dependent noise.
+
 ## External classification passthrough
 
 CRAFT does not do structural QC; it assumes the isoform GTF is already curated by
@@ -292,7 +309,8 @@ craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --outpu
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `--counts` | none | Per-cell counts (`.h5ad` or 10x MTX dir); populates `annotated.h5ad`. |
+| `--counts` | none | Per-cell counts (`.h5ad` or 10x MTX dir); populates `annotated.h5ad` and recurrence columns (`total_count`, `n_cells_detected`, `isoform_fraction_within_gene`). |
+| `--cell-whitelist` | none | Text file of called-cell barcodes (one per line). With `--counts`, recurrence metrics are computed over these cells only; otherwise over every barcode in the matrix (includes ambient droplets). Recommend deriving from the cell-calling knee. |
 | `--pfam-hmm` | none | Enables Pfam domain analysis. |
 | `--polya-atlas` | none | Curated poly(A) BED; drives the `alt_3prime_end` reclassification. |
 | `--group-by` | none | Obs column to aggregate consequences by; writes `per_celltype_consequence.tsv` (requires `--counts`). |
@@ -314,6 +332,9 @@ craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --outpu
 ```python
 import pandas as pd
 df = pd.read_csv("out/per_isoform.tsv", sep="\t")
+
+# Recurrent isoforms detected in multiple cells (with --counts)
+df[df["n_cells_detected"] >= 3]
 
 # High-confidence NMD substrates, using the sequence-resolved call
 df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]

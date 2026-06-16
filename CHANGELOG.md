@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-06-16
+
+Depth-stable per-cell recurrence signals and called-cell filtering for
+count matrices. New per-isoform columns: total_count, n_cells_detected,
+isoform_fraction_within_gene. Output is 60 -> 63 columns (additive;
+existing columns verified byte-identical on chr22).
+
+### Added
+- Three per-isoform recurrence columns (populated only with `--counts`):
+  - `total_count`: UMI-corrected molecules summed across cells.
+  - `n_cells_detected`: number of cells with the isoform; depth-stable signal.
+  - `isoform_fraction_within_gene`: relative abundance within parent gene.
+- `--cell-whitelist PATH` flag: optional text file of called-cell barcodes
+  (one per line). With `--counts`, recurrence metrics computed over these
+  cells only; otherwise over every barcode in the matrix (includes ambient
+  droplets). Recommend deriving from cell-calling knee plot.
+- Documentation in features.md, methods.md, and user_guide.md on recurrence
+  signals and depth-stability rationale.
+
 ## [1.7.0] - 2026-06-09
 
 Consolidated NMD and a full report overhaul. No paper is planned (GitHub-only),

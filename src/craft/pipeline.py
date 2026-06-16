@@ -22,6 +22,11 @@ from craft.core.orf.propagation import ORFOutcome, propagate
 from craft.core.orf.resolve import resolve as resolve_orf
 from craft.core.pfam import scan as pfam_scan
 from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
+from craft.core.recurrence import (
+    compute_recurrence,
+    load_cell_whitelist,
+    within_gene_fraction,
+)
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
@@ -120,6 +125,10 @@ _OUTPUT_COLUMNS = [
     "coding_potential_score",
     "coding_potential_label",
     "coding_potential_orf_source",
+    # Per-cell recurrence (depth-stable; populated only with --counts)
+    "total_count",
+    "n_cells_detected",
+    "isoform_fraction_within_gene",
 ]
 
 _RESOLVE_COLUMNS = (
@@ -427,6 +436,7 @@ def run_annotate(
     output_dir: Path,
     genome_path: Path | None = None,
     counts_path: Path | None = None,
+    cell_whitelist_path: Path | None = None,
     pfam_hmm_path: Path | None = None,
     polya_atlas_path: Path | None = None,
     tolerance: int = 50,
@@ -452,7 +462,11 @@ def run_annotate(
         genome_path: Optional indexed genome FASTA. Required for de novo ORF
             prediction on orphans and for poly(A) signal scanning.
         counts_path: Optional per-cell count matrix (h5ad or 10x MTX dir).
-            Currently parsed elsewhere; not used in this pipeline yet.
+            When given, populates total_count / n_cells_detected /
+            isoform_fraction_within_gene and the AnnData counts layer.
+        cell_whitelist_path: Optional file of called-cell barcodes (one per line).
+            When given with counts_path, recurrence is computed over these cells
+            only; otherwise every barcode in the matrix is used.
 
     Returns:
         Per-isoform DataFrame with the columns written to ``per_isoform.tsv``.
@@ -644,9 +658,25 @@ def run_annotate(
                 file=sys.stderr,
             )
 
+    # Per-cell recurrence: depth-stable filtering signals from the count matrix.
+    counts_adata = load_counts(counts_path) if counts_path is not None else None
+    whitelist = (
+        load_cell_whitelist(cell_whitelist_path)
+        if cell_whitelist_path is not None
+        else None
+    )
+    if counts_adata is not None:
+        rec_df = compute_recurrence(counts_adata, whitelist)
+        merged = merged.merge(rec_df, on="transcript_id", how="left")
+    for col in ("total_count", "n_cells_detected"):
+        if col not in merged.columns:
+            merged[col] = np.nan
+    merged["isoform_fraction_within_gene"] = within_gene_fraction(
+        merged["total_count"], merged["parent_gene_id"]
+    )
+
     merged = merged.reindex(columns=_OUTPUT_COLUMNS + carried)
 
-    counts_adata = load_counts(counts_path) if counts_path is not None else None
     adata = to_anndata(merged, counts=counts_adata)
 
     if group_by is not None and counts_adata is not None:

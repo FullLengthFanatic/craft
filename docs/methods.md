@@ -546,11 +546,44 @@ override.
 
 ---
 
+## Module 9: Per-cell recurrence signals (v1.8)
+
+**Source:** `src/craft/core/recurrence.py` (`compute_recurrence`,
+`within_gene_fraction`, `load_cell_whitelist`), wired into `src/craft/pipeline.py`.
+
+**When it runs.** Only when `--counts` is supplied. Populates three new columns
+in the per-isoform output: `total_count`, `n_cells_detected`, and
+`isoform_fraction_within_gene`. All remain null/empty when `--counts` is absent
+or the isoform is absent from the count matrix.
+
+**Rationale.** Raw molecule counts are depth-dependent: a cell with 10x higher
+sequencing depth will show 10x higher counts for every isoform, inflating total
+counts and drowning out rare isoforms. Cell recurrence (the count of independent
+cells with at least one molecule) is depth-stable; an isoform seen in many cells
+is supported regardless of per-cell sequencing depth. For filtering, cell
+recurrence is more robust than read/count thresholds.
+
+**Computation.**
+
+1. Load per-cell counts from `--counts` (either `.h5ad` or 10x MTX). Optionally
+   filter to called cells if `--cell-whitelist` is provided (a text file with
+   one barcode per line). Without the whitelist, every barcode in the matrix is
+   used, including ambient droplets.
+2. For each isoform, sum UMI-corrected molecules across the selected cell set
+   (`total_count`).
+3. Count cells with at least one molecule of the isoform (`n_cells_detected`).
+4. For each isoform, divide its `total_count` by the summed `total_count` of all
+   isoforms with the same `parent_gene_id` (`isoform_fraction_within_gene`).
+
+The same computation is also exported to `annotated.h5ad` as `var` columns.
+
+---
+
 ## Output schema
 
 CRAFT writes four files to `output_dir/`:
 
-### `per_isoform.tsv` (one row per isoform, 34 columns; 39 with `--pfam-hmm`)
+### `per_isoform.tsv` (one row per isoform, 63 columns)
 
 The full annotation table. List-valued columns (CDS intervals, Pfam
 domain lists) are JSON-encoded so the TSV is grep-friendly while still
@@ -597,6 +630,9 @@ being round-trippable.
 | `pfam_preserved` *              | pfam                  | list[str] | iso_domains ∩ parent_domains                                             |
 | `pfam_lost` *                   | pfam                  | list[str] | parent_domains - iso_domains                                             |
 | `pfam_gained` *                 | pfam                  | list[str] | iso_domains - parent_domains                                             |
+| `total_count`                   | recurrence (v1.8)     | int / null | UMI-corrected molecules summed across cells. Computed over called cells when `--cell-whitelist` is given; over every barcode otherwise. Null without `--counts` or if isoform not in count matrix. |
+| `n_cells_detected`              | recurrence (v1.8)     | int / null | Cells with at least one molecule; depth-stable recurrence signal. Null without `--counts`. |
+| `isoform_fraction_within_gene`  | recurrence (v1.8)     | float / null | `total_count` / summed `total_count` of isoforms sharing `parent_gene_id`. Null for isoforms without parent gene or without measured counts. |
 
 *Pfam columns are empty lists unless `--pfam-hmm` was supplied.
 

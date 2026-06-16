@@ -525,3 +525,53 @@ def test_pipeline_no_classification_omits_columns(
         genome_path=pipeline_inputs["genome"],
     )
     assert "structural_category" not in result.columns
+
+
+def test_pipeline_recurrence_columns_with_counts(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    import anndata as ad
+    import numpy as np
+
+    # 3 cells x 2 isoforms (t_intact, t_novel); c3 is excluded by the whitelist.
+    counts = ad.AnnData(X=np.array([[2, 0], [1, 3], [0, 1]], dtype=float))
+    counts.obs_names = pd.Index(["c1", "c2", "c3"])
+    counts.var_names = pd.Index(["t_intact", "t_novel"])
+    counts_path = tmp_path / "counts.h5ad"
+    counts.write_h5ad(counts_path)
+    whitelist = tmp_path / "cells.txt"
+    whitelist.write_text("c1\nc2\n")
+
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        counts_path=counts_path,
+        cell_whitelist_path=whitelist,
+    )
+    r = result.set_index("transcript_id")
+    for col in ("total_count", "n_cells_detected", "isoform_fraction_within_gene"):
+        assert col in result.columns
+    # over c1+c2: t_intact = 3 molecules in 2 cells; t_novel = 3 molecules in 1 cell.
+    assert r.loc["t_intact", "total_count"] == 3
+    assert r.loc["t_intact", "n_cells_detected"] == 2
+    assert r.loc["t_novel", "total_count"] == 3
+    assert r.loc["t_novel", "n_cells_detected"] == 1
+    # t_intact is the only isoform of gene g1 -> fraction 1.0; t_novel orphan -> NaN.
+    assert r.loc["t_intact", "isoform_fraction_within_gene"] == pytest.approx(1.0)
+    assert pd.isna(r.loc["t_novel", "isoform_fraction_within_gene"])
+
+
+def test_pipeline_recurrence_columns_nan_without_counts(
+    pipeline_inputs: dict[str, Path],
+) -> None:
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+    )
+    for col in ("total_count", "n_cells_detected", "isoform_fraction_within_gene"):
+        assert col in result.columns
+        assert result[col].isna().all()
