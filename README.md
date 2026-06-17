@@ -20,7 +20,9 @@ codon outside the read, structural divergence in CDS). De-novo ORF prediction is
 used only as a fallback for genuinely novel isoforms.
 
 For the full method, every category definition, and the rationale for every
-design choice, read [`docs/methods.md`](docs/methods.md).
+design choice, read [`docs/methods.md`](docs/methods.md). New to CRAFT, or sending
+it to a collaborator? Start with the [white paper](docs/whitepaper.md): a
+plain-language primer on the ORF/NMD logic and the depth-stable isoform filtering.
 
 ## Install
 
