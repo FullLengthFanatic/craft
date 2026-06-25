@@ -7,6 +7,7 @@ authors:
     given-names: Simone
     email: simone.picelli@iob.ch
     affiliation: "Institute of Molecular and Clinical Ophthalmology Basel (IOB)"
+    orcid: "https://orcid.org/0000-0002-1747-614X"
 version: "1.8.0"
 date-released: 2026-06-16
 license: MIT
