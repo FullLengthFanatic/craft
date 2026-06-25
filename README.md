@@ -102,6 +102,25 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 Every column is documented in [`docs/features.md`](docs/features.md).
 
+### What the report looks like
+
+`report.html` is a self-contained, interactive page: summary cards, distribution
+charts, and notable-findings tables. Here it is on the BD70 FLIGHT-seq sample
+(186,079 isoforms):
+
+<p align="center"><img src="docs/figures/report_full.png" alt="CRAFT HTML report" width="900"></p>
+
+The key distribution panels, rendered from the same run:
+
+<p align="center">
+  <img src="docs/figures/report_completeness.png" alt="Completeness distribution" width="46%">
+  <img src="docs/figures/report_resolved_orf.png" alt="Resolved ORF status distribution" width="46%">
+</p>
+<p align="center">
+  <img src="docs/figures/report_nmd_status.png" alt="NMD status distribution" width="46%">
+  <img src="docs/figures/report_coding_potential.png" alt="Coding-potential score histogram" width="46%">
+</p>
+
 CRAFT classifies each ORF by geometric propagation (`orf_outcome`,
 `propagated_cds_*`) and then reconstructs the spliced CDS to find the real stop
 (`resolved_orf_status`, `intron_retained_in_cds`, ...). NMD and UTR consequences
