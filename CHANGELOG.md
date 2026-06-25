@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-06-25
+
+### Added
+- README: a screenshot of the HTML report plus the key distribution charts
+  (rendered from the BD70 run), committed under `docs/figures/`.
+
 ### Fixed
 - HTML report distribution bars (`category_bar`): pad the x-range so the
   count/percent labels on the highest-volume bars are no longer clipped at the
-  figure's right edge (`src/craft/report/plots.py`).
+  figure's right edge (`src/craft/report/plots.py`). Affects every `report.html`;
+  no change to the per-isoform outputs.
 
 ## [1.8.2] - 2026-06-25
 
