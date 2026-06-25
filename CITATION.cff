@@ -11,7 +11,12 @@ authors:
 version: "1.8.1"
 date-released: 2026-06-25
 license: MIT
+doi: 10.5281/zenodo.20844836
 repository-code: "https://github.com/FullLengthFanatic/craft"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20844836
+    description: "Concept DOI (resolves to all versions)"
 keywords:
   - long-read RNA-seq
   - single-cell

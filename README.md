@@ -5,6 +5,7 @@
 ![status](https://img.shields.io/badge/status-pre--alpha-orange)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20844836.svg)](https://doi.org/10.5281/zenodo.20844836)
 
 A Python toolkit for long-read isoform functional-consequence annotation. Takes
 the output of any long-read isoform caller (FLAIR, IsoQuant, Bambu, FLAMES,
