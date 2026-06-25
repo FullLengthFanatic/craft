@@ -2,7 +2,7 @@
 
 ``n_cells_detected`` and ``total_count`` are depth-stable filtering signals: an
 isoform observed in many independent cells is supported regardless of per-cell
-sequencing depth, unlike a raw read count (which also carries PCR duplication).
+sequencing depth, unlike a raw read count, which scales with how deeply each cell was sequenced.
 ``isoform_fraction_within_gene`` puts an isoform's abundance on a per-gene scale,
 which cancels the depth term as well.
 

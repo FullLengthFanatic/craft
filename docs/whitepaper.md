@@ -12,7 +12,7 @@ The second half of this note is a quieter problem: deciding which versions are r
 
 Long-read sequencing gives you isoform structures. It does not tell you what those structures do to the protein. CRAFT closes that gap: for every isoform in a long-read catalog it works out the reading frame, whether the protein stays intact or is truncated, whether the transcript is an NMD target, what happens to the UTRs, and which Pfam domains survive. This note covers three things, in order of how much recent work they took: how CRAFT assigns an ORF, how it calls NMD, and how we filter a single-cell isoform set.
 
-The worked examples use **BD70**, a FLIGHT-seq sample (single-cell PacBio Iso-Seq) from a human organoid: about 2,500 cells, 72 million reads, quantified isoform by cell.
+The worked examples use **BD70**, a FLIGHT-seq single-cell sample from a human organoid, quantified isoform by cell.
 
 ---
 
@@ -66,13 +66,13 @@ This is the part worth scrutinising, because it is where a read-count threshold 
 
 ### Why a read count is the wrong currency
 
-A raw read count is, roughly, abundance times depth times capture. FLIGHT-seq deliberately spreads about 72 million reads across roughly 2,500 cells, so the depth term moves with how the experiment was run. A fixed cutoff, say "keep isoforms with at least 20 reads," is therefore harsher on a shallow sample and softer on a deep one, and it preferentially deletes rare-but-real isoforms of lowly-expressed genes. Concretely, on BD70, lifting the read cutoff from 20 to 50 would discard 49,000 isoforms that are each detected in 5 or more independent cells.
+A raw read count is, roughly, abundance times depth times capture. How deeply a sample is sequenced and how many cells it carries vary from run to run, so the depth term is a property of the experiment, not of the isoform. A fixed cutoff, say "keep isoforms with at least 20 reads," is therefore harsher on a shallow sample and softer on a deep one, and it preferentially deletes rare-but-real isoforms of lowly-expressed genes. Concretely, on BD70, lifting the read cutoff from 20 to 50 would discard 49,000 isoforms that are each detected in 5 or more independent cells.
 
 ### What to use instead: recurrence
 
-Count how many cells an isoform appears in. An isoform seen in 4 cells on 4 reads is stronger evidence than one seen on 30 reads in a single cell, because four independent observations beat one amplified one. Recurrence carries no depth term, so a threshold on it transfers from one sample to the next. It is the single-cell analogue of requiring detection across replicates.
+Count how many cells an isoform appears in. An isoform seen in 4 separate cells is stronger evidence than one confined to a single cell, however high its molecule count there: four independent observations beat one. Recurrence carries no depth term, so a threshold on it transfers from one sample to the next. It is the single-cell analogue of requiring detection across replicates.
 
-One fact made this simpler than expected. After UMI correction, abundance and recurrence are essentially the same quantity: on BD70 the median is 1.07 molecules per detected cell, and the rank correlation between total molecules and number of cells is 0.998. So there is really one number to filter on, and it is depth-stable. The thing that *diverges* from it is the raw long-read count, which carries a median 3.4-fold PCR duplication and a tail past 700-fold. That duplication is exactly what a read threshold rewards.
+One fact made this simpler than expected. After UMI correction, abundance and recurrence are essentially the same quantity: on BD70 the median is 1.07 molecules per detected cell, and the rank correlation between total molecules and number of cells is 0.998. So there is really one number to filter on, and it is depth-stable. The full-length read count that a min-reads filter (pigeon's `min20`) thresholds on is depth-dependent in a way recurrence is not: it follows how deeply the sample was sequenced and how efficiently each molecule was captured, not the number of cells the isoform was actually seen in.
 
 CRAFT now writes three columns from the count matrix:
 
@@ -110,7 +110,7 @@ Stated with the honest bounds:
 - **Floor: 13,722 recovered transcripts (4,069 protein-coding).** These sit in genes the read catalog missed entirely, so no sibling isoform can be confused for them. This is the number you can stand behind without caveat.
 - **Ceiling: 43,052 (17,354 protein-coding).** This adds transcripts in genes where a sibling *was* captured, where the matrix's best-match read assignment could credit some molecules to the wrong isoform of the gene. Real transcripts, but their per-isoform support is softer.
 
-Either way, the recovered transcripts are genuinely low-abundance (a median of 12 molecules against 39 for the captured ones), which is precisely why a read threshold never built a model for them. Low abundance is not low confidence once you have recurrence.
+Either way, the recovered transcripts are genuinely low-abundance (a median of 12 molecules, against 55 for captured transcripts at the same 3-or-more-cell recurrence), which is precisely why a read threshold never built a model for them. Low abundance is not low confidence once you have recurrence.
 
 The operational answer is the **hybrid catalog**: keep every annotated transcript by construction (reference-guided quantification, no read threshold on known isoforms), add the novel isoforms from the de-novo collapse, and apply the recurrence filter only to the novel fraction. Reference for what is known, recurrence for what is new.
 

@@ -73,8 +73,8 @@ Optional flags:
   (default `structural_category`) onto the output by transcript_id, so you can
   cut novel-boundary classes against CRAFT's consequence calls.
 
-Runtime on chr22 of a real PacBio Iso-Seq sample (~13k isoforms): ~2 minutes.
-Full-genome scale runs end-to-end: the bcM0003 PacBio Iso-Seq sample (698,049
+Runtime on chr22 of a real FLIGHT-seq sample (~13k isoforms): ~2 minutes.
+Full-genome scale runs end-to-end: the bcM0003 FLIGHT-seq sample (698,049
 isoforms, with `--polya-atlas` and coding potential on, no `--pfam-hmm`) takes
 ~1h45m wall and ~19 GB RAM on a 32-core VM.
 
@@ -165,7 +165,7 @@ premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 ## Status
 
 v1.8.0. The pipeline runs end-to-end on real long-read isoform GTFs at
-full-genome scale. Validated on a PacBio Iso-Seq sample (chr22 subset and the
+full-genome scale. Validated on a FLIGHT-seq sample (chr22 subset and the
 full bcM0003 sample, ~698k isoforms). Methods paper in preparation: benchmarking
 reference-isoform ORF propagation vs de-novo prediction on simulated truncated
 reads.

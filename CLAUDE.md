@@ -10,7 +10,7 @@ caller (isoseq+pigeon, FLAIR, IsoQuant, Bambu, FLAMES, SQANTI3). Per isoform it 
 structural completeness, ORF status (propagated + sequence-resolved + de-novo
 fallback), NMD, UTR features, coding potential, optional Pfam, and per-cell
 recurrence. Output is a 63-column table + HTML report + AnnData. Current version
-v1.8.0. MIT. Public repo: https://github.com/FullLengthFanatic/craft.
+v1.8.1. MIT. Public repo: https://github.com/FullLengthFanatic/craft.
 
 ## Two design commitments (don't violate these)
 
