@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-06-25
+
+Documentation and metadata release (no code changes). Archived to Zenodo for a
+citable DOI.
+
+### Added
+- `docs/craft_explained.md`: a detailed, code-anchored design guide (per-stage
+  how/why with verbatim snippets, file:line, and GitHub permalinks pinned to the
+  release commit; the CLI knobs vs source-only parameters; the full 63-column
+  schema; strengths with verified numbers; a tool comparison; an interpretation FAQ).
+- `CLAUDE.md`: a short pointer file documenting project conventions and the doc map.
+- Committed the BD70 recurrence/recovery analysis scripts under
+  `test_dataset/input_files/analysis/` as provenance for the documented numbers.
+- Author ORCID in `.zenodo.json` and `CITATION.cff`.
+
+### Removed
+- `docs/methods_paper.md` (stale v1.4-era manuscript; CRAFT is GitHub-only).
+- `docs/methods.md` (unique content folded into `docs/craft_explained.md`).
+
+### Fixed
+- Documentation accuracy: corrected an output-schema listing to the full 63
+  columns and a stale reference path in the white paper.
+
 ## [1.8.0] - 2026-06-16
 
 Depth-stable per-cell recurrence signals and called-cell filtering for

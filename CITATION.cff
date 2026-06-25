@@ -8,8 +8,8 @@ authors:
     email: simone.picelli@iob.ch
     affiliation: "Institute of Molecular and Clinical Ophthalmology Basel (IOB)"
     orcid: "https://orcid.org/0000-0002-1747-614X"
-version: "1.8.0"
-date-released: 2026-06-16
+version: "1.8.1"
+date-released: 2026-06-25
 license: MIT
 repository-code: "https://github.com/FullLengthFanatic/craft"
 keywords:
