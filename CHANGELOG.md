@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-06-25
+
+Documentation accuracy fixes (no code changes beyond a docstring). This is the
+citable snapshot for the corrected docs.
+
+### Fixed
+- Corrected the sequencing platform of the validation samples (BD70, bcM0003,
+  chr22) to FLIGHT-seq single-cell long-read throughout the docs; they are not
+  PacBio Iso-Seq. Generalized the poly(A) and completeness-tolerance rationale
+  off PacBio-specific wording.
+- Removed the PCR-duplication / amplification framing from the docs and the
+  `recurrence.py` docstring: the per-cell counts are UMI-deduplicated molecules.
+- Fixed the recovered-vs-captured abundance comparison to a like-for-like median
+  (12 vs 55 molecules at the same 3-or-more-cell recurrence; was 39, a different
+  subset).
+- Dropped a sample-specific generalization ("72M reads / 2,500 cells") that had
+  been stated as a property of FLIGHT-seq.
+
 ## [1.8.1] - 2026-06-25
 
 Documentation and metadata release (no code changes). Archived to Zenodo for a
