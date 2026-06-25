@@ -1,9 +1,9 @@
 # CRAFT feature & column reference
 
 This is the single place that documents every output column CRAFT produces and
-how each is computed. For the algorithmic rationale and threshold justifications,
-see [`methods.md`](methods.md). For operational recipes, see
-[`user_guide.md`](user_guide.md).
+how each is computed. For the algorithmic rationale, threshold justifications, and
+where each rule lives in the code, see [`craft_explained.md`](craft_explained.md).
+For operational recipes, see [`user_guide.md`](user_guide.md).
 
 ## The one thing to understand first: how the ORF is determined
 

@@ -155,4 +155,4 @@ df[(df.orf_confidence.isin(["high", "medium"])) & (df.n_cells_detected >= 3)]
 
 ## Appendix: the BD70 run
 
-Reference GENCODE v44, genome GRCh38 primary assembly. Isoforms from the trimmed (poly(A)-clipped) pigeon collapse, filtered to >=20 full-length reads. Recurrence computed over the top 3,000 barcodes from the cell-calling knee. CRAFT v1.8.0. The per-isoform table, the recurrence and recovery analyses, and the scripts that produced every number above live under `test_dataset/` and `analysis/`; all figures are reproducible from the saved tables.
+Reference GENCODE v44, genome GRCh38 primary assembly. Isoforms from the trimmed (poly(A)-clipped) pigeon collapse, filtered to >=20 full-length reads. Recurrence computed over the top 3,000 barcodes from the cell-calling knee. CRAFT v1.8.0. The per-isoform table, the recurrence and recovery analyses, and the scripts that produced every number above live under `test_dataset/` and `test_dataset/input_files/analysis/`; all figures are reproducible from the saved tables.

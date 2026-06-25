@@ -19,10 +19,14 @@ exactly where the call becomes uncertain (start codon outside the read, stop
 codon outside the read, structural divergence in CDS). De-novo ORF prediction is
 used only as a fallback for genuinely novel isoforms.
 
-For the full method, every category definition, and the rationale for every
-design choice, read [`docs/methods.md`](docs/methods.md). New to CRAFT, or sending
-it to a collaborator? Start with the [white paper](docs/whitepaper.md): a
-plain-language primer on the ORF/NMD logic and the depth-stable isoform filtering.
+New to CRAFT, or sending it to a collaborator? Start with the
+[white paper](docs/whitepaper.md): a plain-language primer on the ORF/NMD logic and
+the depth-stable isoform filtering. For the full method tied to the exact code,
+every parameter and where to change it, the design rationale, and the strengths and
+limitations versus other tools, read
+[`docs/craft_explained.md`](docs/craft_explained.md). Every output column is defined
+in [`docs/features.md`](docs/features.md), and [`docs/user_guide.md`](docs/user_guide.md)
+covers running CRAFT end to end.
 
 ## Install
 
@@ -144,7 +148,7 @@ self-calibrated to the reference. Optionally scan the translated CDS against a
 Pfam HMM database. Emit TSV, JSON, HTML report, and AnnData.
 
 For the full algorithm, threshold defaults, and design rationale, see
-[`docs/methods.md`](docs/methods.md).
+[`docs/craft_explained.md`](docs/craft_explained.md).
 
 ## What CRAFT does *not* do
 

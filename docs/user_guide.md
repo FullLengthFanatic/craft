@@ -1,9 +1,9 @@
 # CRAFT user guide
 
 How to run CRAFT in your workflow, what to watch out for, and how to use the
-outputs downstream. This is the operational reference. For algorithm details
-see [`methods.md`](methods.md); for a high-level overview see
-[`../README.md`](../README.md).
+outputs downstream. This is the operational reference. For algorithm details and
+where each rule lives in the code see [`craft_explained.md`](craft_explained.md);
+for a high-level overview see [`../README.md`](../README.md).
 
 ## Contents
 
