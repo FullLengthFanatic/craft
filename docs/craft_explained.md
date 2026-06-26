@@ -502,15 +502,22 @@ Every number here was reproduced from its source: the benchmark figures committe
 
 CRAFT is a functional-consequence annotator, not an isoform caller and not a structural-QC tool. The honest framing is where it adds something the existing tools do not, and where it deliberately does less.
 
-| Tool | Language | Scope | Truncated novel isoforms | Single-cell |
+| Tool | Language | Scope | ORF on truncated isoforms | Single-cell |
 |---|---|---|---|---|
-| **CRAFT** | Python | ORF / NMD / UTR / coding-potential / Pfam consequences | propagates parent CDS onto truncated isoforms with truncation-aware confidence | recurrence + per-celltype aggregation, AnnData/MuData |
-| IsoformSwitchAnalyzeR | R | the most complete functional-consequence suite (ORF, NMD, domains, switching) | built around bulk switch detection | not designed for it |
-| IsoAnnotLite / tappAS | Python / GUI | transfers annotation to isoforms | only to isoforms that match a reference transcript; genuine novels get nothing | tappAS GUI, last meaningfully updated ~2021 |
+| **CRAFT** | Python | per-isoform ORF / NMD / UTR / coding-potential / Pfam annotation (no contrast needed) | reads start/stop off the parent when the ORF survives truncation; flags `start_lost` when it doesn't | depth-stable recurrence + per-celltype aggregation |
+| IsoformSwitchAnalyzeR v2 | R | the most complete suite: 37 consequences (domains, IDR, topology, localization, signal peptide, ORF/PTC, coding potential) on top of a statistical isoform-switch (DTU) framework | ORF/PTC annotation; not specialised for the truncated-read regime | yes (v2): pseudo-bulk per cell type, then DTU |
+| IsoAnnotLite / tappAS | Python / GUI | transfers annotation to isoforms | only to isoforms matching a reference transcript; genuine novels get nothing | tappAS GUI, last meaningfully updated ~2021 |
 | SQANTI3 + pigeon | Python | structural QC + classification (FSM/ISM/NIC/NNC), some ORF/NMD | upstream of CRAFT; classifies, does not propagate | classification only |
 | orfipy / CPAT / CPC2 / TransDecoder | Python | de-novo ORF / coding potential | de-novo, no parent anchor (the failure mode in Section 2) | n/a |
 
-What CRAFT does that the peers do not is the truncation-aware propagation of a curated CDS onto partially-truncated novel isoforms, with an explicit confidence flag for where the call becomes uncertain, plus depth-stable single-cell recurrence. What it deliberately does not do:
+**Overlap with IsoformSwitchAnalyzeR (ISAR).** As of v2 (late 2025), ISAR explicitly handles long-read and single-cell data and annotates ORF/PTC, Pfam domain changes, and coding potential, so the per-isoform functional-annotation layer now overlaps substantially with CRAFT. ISAR is the broader and more established tool: 37 functional consequences (including IDR, protein topology, sub-cellular localization, and signal peptide), a mature differential-transcript-usage (DTU) statistical framework, and a large R/Bioconductor ecosystem. CRAFT does not try to match that breadth. Where it still differs:
+
+- **Annotation, not switch detection.** ISAR's unit is an isoform *switch* between conditions; it needs a contrast and a DTU test. CRAFT annotates every isoform standalone, no contrast required, which is what you want for a long-read catalog where the question is "what does each isoform do."
+- **Truncation-aware ORF.** CRAFT reads the parent's start/stop off the reference when the ORF survives truncation, resolves the real stop from the isoform's own sequence (catching frameshift, exon-skip, and intron-retention PTCs), and flags `start_lost` when the start is genuinely gone. ISAR's ORF/PTC step is not specialised for this regime. CRAFT does not recover a start that was truncated away; it labels it.
+- **Single-cell filtering.** ISAR pseudo-bulks per cell type and runs DTU. CRAFT instead scores depth-stable per-cell recurrence and recovers isoforms a read-count filter drops, a different question (which isoforms are real) from differential usage.
+- **Self-contained Python.** No R and no external annotation services (SignalP / NetSurfP / DeepTMHMM / DeepLoc); the trade-off is that CRAFT does not offer those consequence types.
+
+The two are largely complementary: CRAFT annotates and filters a catalog per isoform, and its table can feed an ISAR switch analysis. What CRAFT deliberately does not do:
 
 - **No structural QC.** It assumes the isoform GTF is post-QC (pigeon, SQANTI3). It describes, it does not delete.
 - **No cell typing.** `--group-by` summarises consequences over an existing cell grouping; clustering is upstream.
