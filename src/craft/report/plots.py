@@ -94,9 +94,10 @@ def category_bar(
             cliponaxis=False,
         )
     )
-    # Pad the x-range so the outside count/percent labels on the longest bars
-    # have room and are not clipped at the figure's right edge.
-    fig.update_xaxes(visible=False, range=[0, max(vals) * 1.3])
+    # Pad the x-range generously so the outside count/percent labels on the
+    # longest bars are not clipped, even when the report lays charts side-by-side
+    # at ~400-500px each. 1.5x stays clear down to ~350px-wide charts.
+    fig.update_xaxes(visible=False, range=[0, max(vals) * 1.5])
     return _theme(fig, title, height=max(200, 50 + 34 * len(cats)))
 
 

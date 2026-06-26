@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- HTML report bars: widen the x-range padding to 1.5x so the count/percent labels
+  are not clipped even when the report lays two charts side-by-side at ~400-500px
+  each (the 1.3x from 1.8.3 still clipped at narrow window widths). Regenerated the
+  README report figures.
+
 ## [1.8.3] - 2026-06-25
 
 ### Added
