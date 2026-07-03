@@ -4,7 +4,7 @@
 
 This is the long companion to [`whitepaper.md`](whitepaper.md) (the plain-language primer) and [`features.md`](features.md) (the per-column output reference). It is written for someone who wants to read the logic, judge it, and tune it. Every stage below names the code, pastes the lines that implement the rule, and tells you whether the parameter is a command-line flag or a source-only constant.
 
-**Code links are pinned.** Every link points at the `v1.8.0` release commit `bdca4e6`, so the line numbers do not drift as the code changes. The current source tree is byte-identical to that tag. Permalink base: `https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/`.
+**Code links are pinned.** Every link points at the `v1.8.0` release commit `bdca4e6`, so the line numbers do not drift as the code changes. Permalink base: `https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/`. The source tree has since advanced to v1.9.0; the v1.9.0 additions (frame-aware start rescue, `--recurrence-null` calibration, the cell-type AS-NMD output, and the `ptc_exon_length_nt` column) are described in text here and are not present at the pinned commit. Re-pin on the next tagged release.
 
 **Numbers are traced.** The benchmark numbers (Section 2, Section 6 items 1-2) come from the committed outputs in `benchmarks/figures/`. The BD70 single-cell numbers (Section 6 items 3-4) were reproduced by running the committed analysis scripts under `test_dataset/input_files/analysis/` (the scripts are in the repo; the large count matrices they read and their multi-MB output tables are not). Anything that cannot be reproduced from those sources is marked as reported rather than verified.
 
@@ -29,7 +29,7 @@ This is the long companion to [`whitepaper.md`](whitepaper.md) (the plain-langua
    - [3.12 Per-cell recurrence](#312-per-cell-recurrence)
    - [3.13 Export and report](#313-export-and-report)
 4. [Every knob: CLI flags and source-only parameters](#4-every-knob-cli-flags-and-source-only-parameters)
-5. [The 63-column output](#5-the-63-column-output)
+5. [The 66-column output](#5-the-66-column-output)
 6. [Strengths (with the evidence)](#6-strengths-with-the-evidence)
 7. [Limitations, and how CRAFT compares to existing tools](#7-limitations-and-how-craft-compares-to-existing-tools)
 8. [Interpreting the calls](#8-interpreting-the-calls)
@@ -42,7 +42,7 @@ This is the long companion to [`whitepaper.md`](whitepaper.md) (the plain-langua
 
 A long-read isoform caller (isoseq+pigeon, FLAIR, IsoQuant, Bambu, FLAMES, SQANTI3) hands you two things: a GTF of isoform structures and, for single-cell protocols, a cell-by-isoform count matrix. They tell you an isoform has these exons and shows up in these cells. They do not tell you whether it still codes, whether it shifts frame, whether it is degraded by NMD, or whether it drops a functional domain. CRAFT answers those per isoform. It sits one step downstream of the caller and one step upstream of biological interpretation.
 
-CRAFT takes three required inputs and several optional ones, and emits a 63-column per-isoform table plus an HTML report and an AnnData. The entry point is the `craft annotate` command ([`src/craft/cli.py:16`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L16-L22)); the orchestration is `run_annotate` in [`src/craft/pipeline.py`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/pipeline.py).
+CRAFT takes three required inputs and several optional ones, and emits a 66-column per-isoform table plus an HTML report and an AnnData. The entry point is the `craft annotate` command ([`src/craft/cli.py:16`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L16-L22)); the orchestration is `run_annotate` in [`src/craft/pipeline.py`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/pipeline.py).
 
 Two design commitments shape everything else.
 
@@ -224,7 +224,7 @@ def _walk_to_stop(seq: str, start_tx: int) -> tuple[int, bool]:
     return n, False
 ```
 
-The resulting stop drives the `resolved_orf_status` column, one of `intact`, `ptc_premature`, `ptc_intron_retained`, `cds_extension`, `no_stop_in_read`, `resolution_failed`. Classification compares the resolved stop to the parent's:
+The resulting stop drives the `resolved_orf_status` column, one of `intact`, `ptc_premature`, `ptc_intron_retained`, `cds_extension`, `start_rescued`, `no_stop_in_read`, `resolution_failed`. Classification compares the resolved stop to the parent's:
 
 ```python
 if parent_stop_tx is not None and resolved_last_coding_tx == parent_stop_tx:
@@ -235,6 +235,8 @@ if ir:
     return ResolvedORFStatus.PTC_INTRON_RETAINED, True, False
 return ResolvedORFStatus.PTC_PREMATURE, True, False
 ```
+
+**Start rescue.** A `start_lost` isoform (5' truncation past the annotated start) is not surrendered to de-novo blindly. CRAFT keeps the parent CDS reading frame, anchored on the 5'-most parent-CDS base still present in the isoform, and takes the first in-frame ATG from the isoform's 5' end, translating to the first in-frame stop. The call is labelled `start_rescued`, its NMD confidence is capped at `low` (the start is inferred, not observed), and only when no in-frame ATG-to-stop exists does the isoform fall back to the de-novo longest ORF. This extends "trust the reference frame" to the truncated-start case instead of guessing a start with orfipy's longest-ORF heuristic.
 
 **Intron retention** is detected by engulfment, not by a junction-count difference: a parent CDS-region intron that the isoform carries as one continuous exon. This is the precise test, and it does not misfire on exon skips (which also lower the junction count but are not retention):
 
@@ -301,7 +303,7 @@ if (res is not None and str(res["resolved_orf_status"]) in _RESOLVED_WITH_STOP
         and bool(res["stop_in_transcript"]) and res["resolved_cds_intervals"]):
     ...
     basis = "resolved"
-    confidence = ORFConfidence.HIGH if str(res["resolved_orf_status"]) == "intact" else ORFConfidence.MEDIUM
+    confidence = HIGH if status == "intact" else (LOW if status == "start_rescued" else MEDIUM)
 else:
     dn = denovo_by_tx.get(tx_id)
     if (dn is not None and bool(dn["denovo_orf_found"]) ...):
@@ -319,14 +321,14 @@ if distance <= ptc_threshold_nt:
     return NMDStatus.ESCAPED, "within_50nt_of_last_junction"
 if cds_bp < start_proximal_nt:
     return NMDStatus.ESCAPED, "start_proximal"
-if last_exon_len > long_last_exon_nt:
-    return NMDStatus.ESCAPED, "long_last_exon"
+if ptc_exon_len > long_last_exon_nt:
+    return NMDStatus.ESCAPED, "long_exon"
 return NMDStatus.SENSITIVE, "ptc_50nt_rule"
 ```
 
 `nmd_status` is `sensitive` / `escaped` / `not_applicable`; `not_applicable` is used when there is no resolved or de-novo stop to measure from. The distance to the last junction is measured in mRNA nucleotides, not genomic distance.
 
-**Parameters.** Three flags: `--ptc-threshold-nt` (50, the EJC 50-nt rule; Lindeboom et al. 2019, the IsoformSwitchAnalyzeR default), `--start-proximal-nt` (150, the re-initiation escape), `--long-last-exon-nt` (400, the empirical long-last-exon escape). See [`cli.py:86-107`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L86-L107). The `nmd_rule` column tells you which rule fired.
+**Parameters.** Three flags: `--ptc-threshold-nt` (50, the EJC 50-nt rule; Lindeboom et al. 2019, the IsoformSwitchAnalyzeR default), `--start-proximal-nt` (150, the re-initiation escape), `--long-last-exon-nt` (400, the long-exon rule). See [`cli.py:86-107`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L86-L107). The `nmd_rule` column tells you which rule fired. The long-exon rule (Lindeboom et al. 2016) is evaluated on the exon that **contains the PTC**, not the transcript's terminal exon: a long exon deposits fewer EJCs per unit length, so a PTC inside it escapes. That exon's length is reported as `ptc_exon_length_nt`; `last_exon_length_nt` is kept alongside it as descriptive context.
 
 Two interpretation traps worth stating: `escaped` is not the same as full-length (an isoform can dodge NMD and still encode a wrecked protein), and `not_applicable` is not the same as safe (it usually means a 5'-truncated read where no reliable ORF could be placed). A baseline rate of NMD-sensitive isoforms is expected even in healthy samples, because regulated unproductive splicing (AS-NMD) is a normal mechanism.
 
@@ -390,6 +392,8 @@ n_cells = np.asarray((x > 0).sum(axis=0)).ravel()
 
 The point of `n_cells_detected` is depth-stability. A per-cell count scales with how deeply each cell was sequenced; the number of cells an isoform appears in does not. The `--cell-whitelist` flag ([`cli.py:41-49`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L41-L49)) matters because the raw matrices carry every barcode, most of which are ambient droplets; without it, recurrence is computed over every barcode and inflated. If the whitelist matches zero barcodes, CRAFT logs a note and falls back to all cells. Section 6 quantifies what this recovers.
 
+**Calibrated recurrence (optional).** `--recurrence-null` replaces the fixed `n_cells_detected >= 3` cut with a dataset-calibrated score (`recurrence_pvalue`, `recurrence_score = 1 - pvalue`). `occupancy` scatters each isoform's molecules across cells in proportion to per-cell depth (multinomial) and takes the upper tail of the resulting Poisson-binomial occupied-cell count via its normal approximation, so it conditions on isoform total, cell count and depth; a broadly-dispersed isoform scores high, a single-cell burst scores low. `betabinom` fits an empirical beta-binomial (by moments) to the observed cells-detected counts, stratified by `structural_category` when `--classification` is supplied. Both default off (`none`), leaving the prior output unchanged. This is the first cut at the open question in Section 10, not a final calibration.
+
 ### 3.13 Export and report
 
 **Code:** [`src/craft/export/anndata.py`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/export/anndata.py), [`src/craft/export/celltype.py`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/export/celltype.py), [`src/craft/report/html.py`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/report/html.py).
@@ -424,6 +428,7 @@ The full option set is in [`src/craft/cli.py:16-165`](https://github.com/FullLen
 | `--classification-columns` | [:160](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L160-L165) | `structural_category` | which columns to carry |
 | `--prefer-coding-parent` | [:136](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L136-L142) | off | parent-selection tiebreak |
 | `--coding-potential / --no-coding-potential` | [:143](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/cli.py#L143-L150) | on | coding-potential stage |
+| `--recurrence-null` | `cli.py` (post-`bdca4e6`) | none | recurrence calibration (occupancy / betabinom) |
 
 **Tunable numeric thresholds**
 
@@ -456,9 +461,9 @@ The full option set is in [`src/craft/cli.py:16-165`](https://github.com/FullLen
 
 ---
 
-## 5. The 63-column output
+## 5. The 66-column output
 
-The canonical order is `_OUTPUT_COLUMNS` in [`src/craft/pipeline.py:57-132`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/pipeline.py#L57-L132); every column is defined in [`features.md`](features.md). The 63 columns group into eleven blocks:
+The canonical order is `_OUTPUT_COLUMNS` in [`src/craft/pipeline.py:57-132`](https://github.com/FullLengthFanatic/craft/blob/bdca4e6f3dcb8e6669f60fdc2033e0df5f1d664b/src/craft/pipeline.py#L57-L132); every column is defined in [`features.md`](features.md). The 66 columns group into eleven blocks:
 
 | Block | Count | Columns |
 |---|---|---|
@@ -467,12 +472,12 @@ The canonical order is `_OUTPUT_COLUMNS` in [`src/craft/pipeline.py:57-132`](htt
 | ORF: resolution | 11 | `resolved_orf_status`, `resolved_stop_pos`, `resolved_cds_bp`, `resolved_aa_length`, `resolved_cds_intervals`, `ptc_introduced`, `intron_retained_in_cds`, `frame_consistent`, `stop_in_transcript`, `uorf_count`, `uorf_triggers_nmd` |
 | ORF: de novo | 6 | `denovo_orf_found`, `denovo_cds_bp`, `denovo_orf_aa_length`, `denovo_start_codon`, `denovo_stop_codon`, `denovo_cds_intervals` |
 | ORF confidence | 2 | `orf_confidence`, `orf_confidence_score` |
-| NMD | 7 | `nmd_status`, `nmd_rule`, `nmd_confidence`, `nmd_basis`, `stop_to_last_junction_nt`, `last_exon_length_nt`, `long_utr3_triggers_nmd` |
+| NMD | 8 | `nmd_status`, `nmd_rule`, `nmd_confidence`, `nmd_basis`, `stop_to_last_junction_nt`, `last_exon_length_nt`, `ptc_exon_length_nt`, `long_utr3_triggers_nmd` |
 | UTRs | 8 | `iso_utr3_length_nt`, `parent_utr3_length_nt`, `utr3_length_delta_nt`, `utr3_length_delta_pct`, `iso_utr5_length_nt`, `parent_utr5_length_nt`, `utr5_length_delta_nt`, `utr5_length_delta_pct` |
 | Poly(A) | 4 | `polya_signal_motif`, `polya_signal_distance_nt`, `polya_evidence_source`, `polya_db_site_id` |
 | Pfam | 5 | `iso_pfam_domains`, `parent_pfam_domains`, `pfam_preserved`, `pfam_lost`, `pfam_gained` |
 | Coding potential | 3 | `coding_potential_score`, `coding_potential_label`, `coding_potential_orf_source` |
-| Per-cell recurrence | 3 | `total_count`, `n_cells_detected`, `isoform_fraction_within_gene` |
+| Per-cell recurrence | 5 | `total_count`, `n_cells_detected`, `isoform_fraction_within_gene`, `recurrence_pvalue`, `recurrence_score` |
 
 A typical filter for trustworthy, expressed, functionally-called isoforms:
 
@@ -513,7 +518,7 @@ CRAFT is a functional-consequence annotator, not an isoform caller and not a str
 **Overlap with IsoformSwitchAnalyzeR (ISAR).** As of v2 (late 2025), ISAR explicitly handles long-read and single-cell data and annotates ORF/PTC, Pfam domain changes, and coding potential, so the per-isoform functional-annotation layer now overlaps substantially with CRAFT. ISAR is the broader and more established tool: 37 functional consequences (including IDR, protein topology, sub-cellular localization, and signal peptide), a mature differential-transcript-usage (DTU) statistical framework, and a large R/Bioconductor ecosystem. CRAFT does not try to match that breadth. Where it still differs:
 
 - **Annotation, not switch detection.** ISAR's unit is an isoform *switch* between conditions; it needs a contrast and a DTU test. CRAFT annotates every isoform standalone, no contrast required, which is what you want for a long-read catalog where the question is "what does each isoform do."
-- **Truncation-aware ORF.** CRAFT reads the parent's start/stop off the reference when the ORF survives truncation, resolves the real stop from the isoform's own sequence (catching frameshift, exon-skip, and intron-retention PTCs), and flags `start_lost` when the start is genuinely gone. ISAR's ORF/PTC step is not specialised for this regime. CRAFT does not recover a start that was truncated away; it labels it.
+- **Truncation-aware ORF.** CRAFT reads the parent's start/stop off the reference when the ORF survives truncation, resolves the real stop from the isoform's own sequence (catching frameshift, exon-skip, and intron-retention PTCs), and flags `start_lost` when the start is genuinely gone. ISAR's ORF/PTC step is not specialised for this regime. When the start is truncated away, CRAFT attempts a frame-aware rescue (first in-frame ATG in the parent frame, labelled `start_rescued` at low confidence) before falling back to de novo.
 - **Single-cell filtering.** ISAR pseudo-bulks per cell type and runs DTU. CRAFT instead scores depth-stable per-cell recurrence and recovers isoforms a read-count filter drops, a different question (which isoforms are real) from differential usage.
 - **Self-contained Python.** No R and no external annotation services (SignalP / NetSurfP / DeepTMHMM / DeepLoc); the trade-off is that CRAFT does not offer those consequence types.
 
@@ -573,7 +578,7 @@ categories to filter on:
 | Outcome | What to do with it |
 |---|---|
 | `disrupted` | real structural change; treat as an altered ORF |
-| `start_lost` | 5' truncation; could be a real ISM, decide on single-cell context |
+| `start_lost` | 5' truncation; a frame-aware `start_rescued` ORF may be reconstructed (low confidence), else de-novo. Could be a real ISM; decide on single-cell context |
 | `stop_not_observed` | 3' truncation; the isoform may be biologically normal, just clipped |
 | `no_parent_cds` | parent is lncRNA/pseudogene; isoform is probably noncoding |
 | `no_parent` + de-novo ORF | possible novel coding isoform; verify with other evidence |
@@ -619,11 +624,11 @@ and the output:
 
 These are the places where input would change the tool, drawn from the whitepaper and the design notes above.
 
-- **A calibrated recurrence threshold.** `n_cells_detected >= 3` is a sensible default, not a principled one. Bambu sets its novelty threshold to hit a target precision against a reference; an equivalent for recurrence would beat a fixed number across samples of different depth.
+- **A calibrated recurrence threshold.** `n_cells_detected >= 3` is a sensible default, not a principled one. Bambu sets its novelty threshold to hit a target precision against a reference; an equivalent for recurrence would beat a fixed number across samples of different depth. `--recurrence-null` (Section 3.12) is a first cut: it scores each isoform against a depth-aware occupancy null or an empirical beta-binomial. What is still missing is a target-precision calibration against a truth set (the Bambu-style step) and unique-read support (below), which would turn the score into a defensible cutoff.
 - **Unique versus ambiguous support.** The recovery ceiling (43,052) is soft because best-match read assignment can credit a low-abundance isoform with a sibling's reads. A unique-read or discriminating-junction count per isoform would collapse the floor/ceiling range to a single honest number.
 - **Validating the intron-retention NMD calls.** Intron-retained premature stops are the least recurrent class; the matched alternative-splicing event tables (intron-retention PSI) are an independent handle to confirm or reject them.
 - **NMD beyond the rules.** The cascade is structural. uORFs and long 3'UTRs are flagged but not modelled, and sequence context (GC, secondary structure) is ignored. That is the obvious next layer if it matters for your biology.
 
 ---
 
-*CRAFT v1.8.0, MIT-licensed. Source: https://github.com/FullLengthFanatic/craft. This document pins all code links to commit `bdca4e6`.*
+*CRAFT v1.9.0, MIT-licensed. Source: https://github.com/FullLengthFanatic/craft. This document pins all code links to the v1.8.0 commit `bdca4e6` for stable line numbers; see the note at the top for the v1.9.0 additions described here but not present at that commit.*

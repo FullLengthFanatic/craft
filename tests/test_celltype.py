@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from craft.export.celltype import aggregate_consequences
+from craft.export.celltype import aggregate_consequences, celltype_as_nmd
 
 
 def _per_isoform() -> pd.DataFrame:
@@ -99,3 +99,37 @@ def test_isoform_in_counts_not_in_per_isoform_counts_in_total() -> None:
     a = _grp(out, "A")
     assert a["total_molecules"] == 30  # iso3 molecules still in denominator
     assert a["frac_alt_3prime_end"] == pytest.approx(0.0)  # iso3 not annotated
+
+
+def test_as_nmd_lists_recurrent_sensitive_isoforms_by_group(tmp_path) -> None:
+    # iso1 is the only NMD-sensitive isoform; it lives in group A (20 mol) not B.
+    out = celltype_as_nmd(_adata(_COUNTS), _per_isoform(), "cell_type", tmp_path / "as_nmd.tsv")
+    assert set(out["cell_group"]) == {"A"}
+    row = out.iloc[0]
+    assert row["transcript_id"] == "iso1"
+    assert row["molecules_in_group"] == 20
+    assert row["frac_of_group"] == pytest.approx(20 / 30)
+    assert (tmp_path / "as_nmd.tsv").exists()
+
+
+def test_as_nmd_recurrence_score_gates_membership() -> None:
+    per = _per_isoform()
+    per["recurrence_score"] = [0.99, 0.99, 0.99]  # iso1 sensitive + recurrent -> kept
+    kept = celltype_as_nmd(_adata(_COUNTS), per, "cell_type", recurrence_score_min=0.95)
+    assert "iso1" in set(kept["transcript_id"])
+
+    per["recurrence_score"] = [0.5, 0.99, 0.99]  # iso1 now below threshold -> dropped
+    dropped = celltype_as_nmd(_adata(_COUNTS), per, "cell_type", recurrence_score_min=0.95)
+    assert dropped.empty
+
+
+def test_as_nmd_missing_group_raises() -> None:
+    with pytest.raises(ValueError, match="not in counts obs"):
+        celltype_as_nmd(_adata(_COUNTS), _per_isoform(), "leiden")
+
+
+def test_as_nmd_without_nmd_status_is_empty() -> None:
+    per = _per_isoform().drop(columns=["nmd_status"])
+    out = celltype_as_nmd(_adata(_COUNTS), per, "cell_type")
+    assert out.empty
+    assert list(out.columns)[0] == "cell_group"

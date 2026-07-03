@@ -57,6 +57,7 @@ class ResolvedORFStatus(str, Enum):
     PTC_INTRON_RETAINED = "ptc_intron_retained"
     CDS_EXTENSION = "cds_extension"
     NO_STOP_IN_READ = "no_stop_in_read"
+    START_RESCUED = "start_rescued"
     RESOLUTION_FAILED = "resolution_failed"
 
 
@@ -226,6 +227,107 @@ def _scan_uorfs(
     return len(stops), bool(triggers)
 
 
+def _parent_phase(g: int, cds_intervals: list[tuple[int, int]], strand: str) -> int | None:
+    """Reading-frame phase (0/1/2) of genomic position ``g`` in the parent CDS.
+
+    The phase is the count of parent CDS bases 5' of ``g`` in transcript order,
+    modulo 3. Returns None if ``g`` is not inside the parent CDS.
+    """
+    ivs = sorted((int(s), int(e)) for s, e in cds_intervals)
+    cum = 0
+    if strand == "+":
+        for s, e in ivs:
+            if g < s:
+                return None
+            if g < e:
+                return (cum + (g - s)) % 3
+            cum += e - s
+        return None
+    for s, e in reversed(ivs):
+        if g >= e:
+            return None
+        if g >= s:
+            return (cum + (e - 1 - g)) % 3
+        cum += e - s
+    return None
+
+
+def _first_inframe_atg(seq: str, frame_offset: int) -> int | None:
+    """Transcript coord of the first ATG on the ``frame_offset`` codon frame, or None."""
+    i = frame_offset % 3
+    n = len(seq)
+    while i + 3 <= n:
+        if seq[i : i + 3] == "ATG":
+            return i
+        i += 3
+    return None
+
+
+def _rescue_start_lost(
+    tx_id: str,
+    chrom: str,
+    strand: str,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    seq: str,
+    prop_intervals: list[tuple] | None,
+    parent_cds_intervals: list[tuple[int, int]],
+    parent_introns: list[tuple[int, int]],
+    cds_span: tuple[int, int],
+    ptc_threshold_nt: int,
+) -> dict | None:
+    """Frame-aware ORF rescue for a 5'-truncated isoform whose start codon is gone.
+
+    Keeps the parent CDS reading frame (anchored on the 5'-most parent-CDS base
+    still present in the isoform) and takes the first in-frame ATG from the
+    isoform's 5' end, translating to the first in-frame stop. This extends the
+    reference-trust to the ``start_lost`` case instead of surrendering it to a
+    blind de-novo longest-ORF search. Returns a resolved row dict, or None when no
+    in-frame ATG + stop exists (the caller then falls back to de novo).
+    """
+    if not prop_intervals:
+        return None
+    if strand == "+":
+        anchor_g = min(int(s) for _, s, _, _ in prop_intervals)
+    else:
+        anchor_g = max(int(e) for _, _, e, _ in prop_intervals) - 1
+    phase = _parent_phase(anchor_g, parent_cds_intervals, strand)
+    anchor_t = _genomic_pos_to_tx_coord(anchor_g, starts, ends, strand)
+    if phase is None or anchor_t is None:
+        return None
+
+    frame_offset = (anchor_t - phase) % 3
+    rescued_start = _first_inframe_atg(seq, frame_offset)
+    if rescued_start is None:
+        return None
+    stop_tx, found = _walk_to_stop(seq, rescued_start)
+    if not found:
+        return None
+
+    intervals = _tx_to_genomic_intervals(rescued_start, stop_tx, chrom, starts, ends, strand)
+    cds_bp = stop_tx - rescued_start
+    resolved_stop = _stop_pos_from_intervals(intervals, strand) if intervals else None
+    cds_lo, cds_hi = cds_span
+    ir = _intron_retained_in_cds(starts, ends, parent_introns, cds_lo, cds_hi)
+    lengths = (ends - starts).astype(int)
+    exon_lengths = lengths.tolist() if strand == "+" else lengths[::-1].tolist()
+    uorf_count, uorf_triggers = _scan_uorfs(seq, rescued_start, exon_lengths, ptc_threshold_nt)
+    return {
+        "transcript_id": tx_id,
+        "resolved_orf_status": ResolvedORFStatus.START_RESCUED.value,
+        "resolved_stop_pos": resolved_stop,
+        "resolved_cds_bp": cds_bp,
+        "resolved_aa_length": cds_bp // 3,
+        "resolved_cds_intervals": intervals,
+        "ptc_introduced": False,
+        "intron_retained_in_cds": ir,
+        "frame_consistent": False,
+        "stop_in_transcript": True,
+        "uorf_count": uorf_count,
+        "uorf_triggers_nmd": uorf_triggers,
+    }
+
+
 def resolve(
     classified: pr.PyRanges,
     propagated: pd.DataFrame,
@@ -267,11 +369,15 @@ def resolve(
     parent_start: dict[str, int] = {}
     parent_stop: dict[str, int] = {}
     parent_cds_span: dict[str, tuple[int, int]] = {}
+    parent_cds_intervals: dict[str, list[tuple[int, int]]] = {}
     for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False):
         strand = str(g["Strand"].iat[0])
         smin = int(g["Start"].min())
         emax = int(g["End"].max())
         parent_cds_span[tx] = (smin, emax)
+        parent_cds_intervals[tx] = [
+            (int(s), int(e)) for s, e in zip(g["Start"], g["End"], strict=True)
+        ]
         if strand == "+":
             parent_start[tx], parent_stop[tx] = smin, emax - 1
         else:
@@ -284,23 +390,40 @@ def resolve(
     tx_ids = propagated["transcript_id"].to_numpy()
     outcomes = propagated["orf_outcome"].astype(str).to_numpy()
     parents = propagated["parent_tx_id"].astype(str).to_numpy()
+    prop_iv = dict(
+        zip(propagated["transcript_id"], propagated["propagated_cds_intervals"], strict=True)
+    )
 
     own_genome = isinstance(genome_fasta, str | Path)
     genome = pysam.FastaFile(str(genome_fasta)) if own_genome else genome_fasta
     try:
         rows: list[dict] = []
         for tx_id, outcome, parent_tx in zip(tx_ids, outcomes, parents, strict=True):
-            if outcome not in _RESOLVABLE_OUTCOMES or parent_tx not in parent_start:
+            if parent_tx not in parent_start:
                 rows.append(_failed_row(tx_id))
                 continue
 
             chrom, strand, starts, ends = iso_by_tx[tx_id]
+            seq = _spliced_sequence(chrom, starts, ends, strand, genome)
+
+            if outcome == ORFOutcome.START_LOST.value:
+                rescued = _rescue_start_lost(
+                    tx_id, chrom, strand, starts, ends, seq,
+                    prop_iv.get(tx_id), parent_cds_intervals.get(parent_tx, []),
+                    parent_introns.get(parent_tx, []), parent_cds_span[parent_tx],
+                    ptc_threshold_nt,
+                )
+                rows.append(rescued if rescued is not None else _failed_row(tx_id))
+                continue
+
+            if outcome not in _RESOLVABLE_OUTCOMES:
+                rows.append(_failed_row(tx_id))
+                continue
             start_tx = _genomic_pos_to_tx_coord(parent_start[parent_tx], starts, ends, strand)
             if start_tx is None:
                 rows.append(_failed_row(tx_id))
                 continue
 
-            seq = _spliced_sequence(chrom, starts, ends, strand, genome)
             stop_tx, found = _walk_to_stop(seq, start_tx)
 
             lengths = (ends - starts).astype(int)

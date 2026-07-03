@@ -7,7 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-03
+
+Functional additions and one NMD correctness fix. Backward-compatible defaults:
+the new recurrence calibration is off unless `--recurrence-null` is set, and the
+per-cell-type AS-NMD outputs only appear with `--group-by`. The per-isoform table
+grows from 63 to 66 columns.
+
+### Added
+- **Frame-aware start rescue for `start_lost` isoforms.** A 5'-truncated isoform
+  whose annotated start is gone is no longer handed straight to de-novo. CRAFT
+  keeps the parent CDS reading frame (anchored on the 5'-most parent-CDS base still
+  present) and takes the first in-frame ATG from the isoform's 5' end, translating
+  to the first in-frame stop. New resolved-ORF status `start_rescued` (NMD
+  confidence capped at `low`, since the start is inferred); de-novo remains the
+  fallback when no in-frame ATG-to-stop exists (`src/craft/core/orf/resolve.py`).
+- **Calibrated per-cell recurrence.** New `--recurrence-null` flag
+  (`occupancy` | `betabinom`, default `none`) emits `recurrence_pvalue` and
+  `recurrence_score` (`1 - pvalue`). `occupancy` scatters each isoform's molecules
+  across cells in proportion to per-cell depth and tests the occupied-cell count
+  (Poisson-binomial, normal-approx tail); `betabinom` fits an empirical
+  beta-binomial to the observed cells-detected counts, stratified by
+  `structural_category` when `--classification` is given. A dataset-calibrated
+  alternative to the fixed `n_cells_detected >= 3` cut (`src/craft/core/recurrence.py`).
+- **Cell-type AS-NMD output.** With `--group-by`, `per_celltype_as_nmd.tsv` lists
+  the recurrent, NMD-sensitive isoforms expressed in each cell group (with molecule
+  support), and the HTML report gains a "Cell-type AS-NMD map" panel
+  (`celltype_as_nmd` in `src/craft/export/celltype.py`, panel in
+  `src/craft/report/html.py`).
+- `ptc_exon_length_nt` per-isoform column: length of the exon containing the
+  resolved stop (the exon the long-exon NMD rule now uses).
+
+### Changed
+- Per-isoform output is now 66 columns (added `ptc_exon_length_nt`,
+  `recurrence_pvalue`, `recurrence_score`). Docs updated throughout.
+
 ### Fixed
+- **NMD long-exon escape rule** now gates on the exon that *contains the PTC*
+  (Lindeboom et al. 2016), not the transcript's terminal exon. Previously a long
+  terminal exon could wrongly rescue a PTC sitting in a short internal exon, and a
+  PTC in a long internal exon with a short terminal exon missed the escape. The
+  `nmd_rule` value is renamed `long_last_exon` -> `long_exon`; `last_exon_length_nt`
+  is retained as descriptive context (`src/craft/core/nmd.py`).
 - HTML report bars: widen the x-range padding to 1.5x so the count/percent labels
   are not clipped even when the report lays two charts side-by-side at ~400-500px
   each (the 1.3x from 1.8.3 still clipped at narrow window widths). Regenerated the

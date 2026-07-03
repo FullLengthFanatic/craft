@@ -10,7 +10,8 @@ Rule cascade (each is a sufficient condition for escape, evaluated in order):
 1. Stop codon in the transcript's last exon (or single-exon transcript).
 2. Stop codon within ``PTC_THRESHOLD_NT`` (default 50) mRNA-nt of the last junction.
 3. Start-proximal: CDS shorter than ``START_PROXIMAL_NT`` (default 150) bp.
-4. Last exon longer than ``LONG_LAST_EXON_NT`` (default 400) bp.
+4. The exon containing the PTC is longer than ``LONG_LAST_EXON_NT`` (default 400) bp
+   (the long-exon rule; Lindeboom et al. 2016, on the PTC-bearing exon).
 Otherwise the transcript is NMD-sensitive (50nt rule violated).
 
 Confidence is ``high`` for a resolved intact ORF, ``medium`` for a resolved but
@@ -31,7 +32,7 @@ LONG_LAST_EXON_NT = 400
 
 # Resolved-ORF statuses (from craft.core.orf.resolve) that carry a real stop.
 _RESOLVED_WITH_STOP = frozenset(
-    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension", "start_rescued"}
 )
 
 _COLUMNS = [
@@ -42,6 +43,7 @@ _COLUMNS = [
     "nmd_basis",
     "stop_to_last_junction_nt",
     "last_exon_length_nt",
+    "ptc_exon_length_nt",
 ]
 
 
@@ -114,11 +116,24 @@ def _last_exon_length(exons: pd.DataFrame, strand: str) -> int:
     return int(last["End"]) - int(last["Start"])
 
 
+def _ptc_exon_length(stop_pos: int, exons: pd.DataFrame) -> int:
+    """Length (bp) of the exon that contains the stop codon; 0 if none does.
+
+    The long-exon NMD-escape rule applies to the exon carrying the PTC (a long
+    exon deposits fewer EJCs per unit length), not the transcript's terminal exon.
+    """
+    mask = (exons["Start"] <= stop_pos) & (stop_pos < exons["End"])
+    if not mask.any():
+        return 0
+    ex = exons[mask].iloc[0]
+    return int(ex["End"]) - int(ex["Start"])
+
+
 def _cascade(
     distance: int,
     in_last: bool,
     cds_bp: int,
-    last_exon_len: int,
+    ptc_exon_len: int,
     ptc_threshold_nt: int,
     start_proximal_nt: int,
     long_last_exon_nt: int,
@@ -129,8 +144,8 @@ def _cascade(
         return NMDStatus.ESCAPED, "within_50nt_of_last_junction"
     if cds_bp < start_proximal_nt:
         return NMDStatus.ESCAPED, "start_proximal"
-    if last_exon_len > long_last_exon_nt:
-        return NMDStatus.ESCAPED, "long_last_exon"
+    if ptc_exon_len > long_last_exon_nt:
+        return NMDStatus.ESCAPED, "long_exon"
     return NMDStatus.SENSITIVE, "ptc_50nt_rule"
 
 
@@ -143,6 +158,7 @@ def _not_applicable(tx_id: str) -> dict:
         "nmd_basis": "none",
         "stop_to_last_junction_nt": None,
         "last_exon_length_nt": None,
+        "ptc_exon_length_nt": None,
     }
 
 
@@ -201,11 +217,14 @@ def predict(
             intervals = res["resolved_cds_intervals"]
             cds_bp = int(res["resolved_cds_bp"])
             basis = "resolved"
-            confidence = (
-                ORFConfidence.HIGH
-                if str(res["resolved_orf_status"]) == "intact"
-                else ORFConfidence.MEDIUM
-            )
+            status_str = str(res["resolved_orf_status"])
+            if status_str == "intact":
+                confidence = ORFConfidence.HIGH
+            elif status_str == "start_rescued":
+                # The start is inferred (frame-anchored), so cap confidence low.
+                confidence = ORFConfidence.LOW
+            else:
+                confidence = ORFConfidence.MEDIUM
         else:
             dn = denovo_by_tx.get(tx_id)
             if (
@@ -228,8 +247,9 @@ def predict(
         stop_pos = _stop_codon_genome(intervals, strand)
         distance, in_last = _distance_stop_to_last_junction(stop_pos, iso_exons, strand)
         last_exon_len = _last_exon_length(iso_exons, strand)
+        ptc_exon_len = _ptc_exon_length(stop_pos, iso_exons)
         status, rule = _cascade(
-            distance, in_last, cds_bp, last_exon_len,
+            distance, in_last, cds_bp, ptc_exon_len,
             ptc_threshold_nt, start_proximal_nt, long_last_exon_nt,
         )
         rows.append(
@@ -241,6 +261,7 @@ def predict(
                 "nmd_basis": basis,
                 "stop_to_last_junction_nt": int(distance),
                 "last_exon_length_nt": int(last_exon_len),
+                "ptc_exon_length_nt": int(ptc_exon_len),
             }
         )
     return pd.DataFrame(rows, columns=_COLUMNS)

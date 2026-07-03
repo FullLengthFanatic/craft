@@ -117,3 +117,121 @@ def aggregate_consequences(
         result.to_csv(Path(output_tsv), sep="\t", index=False, float_format="%.4f")
     adata.uns["celltype_consequences"] = {"group_by": group_by, "aggregates": result}
     return result
+
+
+_AS_NMD_COLUMNS = [
+    "cell_group",
+    "transcript_id",
+    "parent_gene_name",
+    "nmd_rule",
+    "nmd_confidence",
+    "recurrence_score",
+    "n_cells_detected",
+    "molecules_in_group",
+    "frac_of_group",
+]
+
+
+def celltype_as_nmd(
+    adata: ad.AnnData,
+    per_isoform: pd.DataFrame,
+    group_by: str,
+    output_tsv: Path | None = None,
+    top_n: int = 50,
+    recurrence_score_min: float = 0.95,
+    min_cells: int = 3,
+) -> pd.DataFrame:
+    """Per-cell-group listing of recurrent, NMD-sensitive isoforms (an AS-NMD map).
+
+    The question a caller/quantifier cannot answer: *which* NMD-sensitive isoforms
+    are recurrently expressed in *which* cell populations. For each group this
+    lists the isoforms that are NMD-sensitive, recurrent, and expressed in that
+    group, with their molecule support. Recurrence uses ``recurrence_score >=
+    recurrence_score_min`` when that column is populated (from ``--recurrence-null``),
+    else ``n_cells_detected >= min_cells``, else expression alone.
+
+    Args:
+        adata: per-cell counts (isoforms in ``var`` indexed by ``transcript_id``).
+        per_isoform: CRAFT per-isoform table (needs ``nmd_status``; uses
+            ``recurrence_score`` / ``n_cells_detected`` / ``parent_gene_name`` when
+            present).
+        group_by: a column in ``adata.obs`` to group cells by.
+        output_tsv: optional path; the listing is written there as TSV.
+        top_n: keep at most this many isoforms per group (highest molecule support).
+
+    Returns:
+        Long-format DataFrame with the columns in ``_AS_NMD_COLUMNS`` (empty, with
+        those columns, when nothing qualifies).
+
+    Raises:
+        ValueError: if ``group_by`` is not a column of ``adata.obs``.
+    """
+    empty = pd.DataFrame(columns=_AS_NMD_COLUMNS)
+    if group_by not in adata.obs.columns:
+        raise ValueError(
+            f"--group-by column {group_by!r} not in counts obs; "
+            f"available: {list(adata.obs.columns)}"
+        )
+    if "nmd_status" not in per_isoform.columns:
+        return empty
+
+    per = per_isoform.copy()
+    per["transcript_id"] = per["transcript_id"].astype(str)
+    consequential = per["nmd_status"] == "sensitive"
+    if "recurrence_score" in per.columns and per["recurrence_score"].notna().any():
+        recurrent = per["recurrence_score"].fillna(0.0) >= recurrence_score_min
+    elif "n_cells_detected" in per.columns and per["n_cells_detected"].notna().any():
+        recurrent = per["n_cells_detected"].fillna(0) >= min_cells
+    else:
+        recurrent = pd.Series(True, index=per.index)
+
+    qualifying = per[consequential & recurrent].set_index("transcript_id")
+    if qualifying.empty:
+        return empty
+
+    var_names = adata.var_names.astype(str)
+    q_positions = np.where(var_names.isin(qualifying.index))[0]
+    if q_positions.size == 0:
+        return empty
+
+    labels = adata.obs[group_by]
+    rows: list[dict] = []
+    for label in pd.unique(labels.dropna()):
+        mask = (labels == label).to_numpy()
+        xg = adata.X[mask, :]
+        col_sums = np.asarray(xg.sum(axis=0)).ravel() if sp.issparse(xg) else xg.sum(axis=0)
+        col_sums = np.asarray(col_sums).ravel()
+        total = float(col_sums.sum())
+        for pos in q_positions:
+            molecules = float(col_sums[pos])
+            if molecules <= 0:
+                continue
+            tx = str(var_names[pos])
+            meta = qualifying.loc[tx]
+            rows.append(
+                {
+                    "cell_group": str(label),
+                    "transcript_id": tx,
+                    "parent_gene_name": str(meta.get("parent_gene_name", "") or ""),
+                    "nmd_rule": str(meta.get("nmd_rule", "") or ""),
+                    "nmd_confidence": str(meta.get("nmd_confidence", "") or ""),
+                    "recurrence_score": meta.get("recurrence_score", float("nan")),
+                    "n_cells_detected": meta.get("n_cells_detected", float("nan")),
+                    "molecules_in_group": molecules,
+                    "frac_of_group": molecules / total if total > 0 else float("nan"),
+                }
+            )
+
+    if not rows:
+        return empty
+    result = (
+        pd.DataFrame(rows, columns=_AS_NMD_COLUMNS)
+        .sort_values(["cell_group", "molecules_in_group"], ascending=[True, False])
+        .groupby("cell_group", sort=False, group_keys=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+    if output_tsv is not None:
+        result.to_csv(Path(output_tsv), sep="\t", index=False, float_format="%.4f")
+    adata.uns["celltype_as_nmd"] = {"group_by": group_by, "isoforms": result}
+    return result

@@ -103,7 +103,7 @@ def cli() -> None:
     type=int,
     default=400,
     show_default=True,
-    help="Last exon longer than this (bp) escapes NMD.",
+    help="Exon containing the PTC longer than this (bp) escapes NMD (long-exon rule).",
 )
 @click.option(
     "--min-orf-aa",
@@ -163,6 +163,17 @@ def cli() -> None:
     show_default=True,
     help="Comma-separated column names to carry from --classification.",
 )
+@click.option(
+    "--recurrence-null",
+    type=click.Choice(["none", "occupancy", "betabinom"]),
+    default="none",
+    show_default=True,
+    help="Calibrate per-cell recurrence against a null (needs --counts): "
+    "'occupancy' scatters each isoform's molecules across cells by depth and "
+    "tests the occupied-cell count; 'betabinom' fits an empirical beta-binomial "
+    "(stratified by structural_category when --classification is given). Emits "
+    "recurrence_pvalue / recurrence_score. 'none' leaves them empty.",
+)
 def annotate(
     isoforms: Path,
     reference: Path,
@@ -185,6 +196,7 @@ def annotate(
     coding_potential: bool,
     classification_path: Path | None,
     classification_columns: str,
+    recurrence_null: str,
 ) -> None:
     """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
     result = run_annotate(
@@ -209,5 +221,6 @@ def annotate(
         classification_path=classification_path,
         classification_columns=classification_columns,
         group_by=group_by,
+        recurrence_null=recurrence_null,
     )
     click.echo(f"Annotated {len(result)} isoforms -> {output_dir}/")

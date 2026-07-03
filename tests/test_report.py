@@ -115,6 +115,31 @@ def test_render_gene_diversity_when_gene_id_present(tmp_path: Path) -> None:
     assert "GENE1" in html
 
 
+def test_render_celltype_as_nmd_panel(tmp_path: Path) -> None:
+    celltype = pd.DataFrame(
+        {
+            "cell_group": ["neuron", "glia"],
+            "transcript_id": ["t2", "t3"],
+            "parent_gene_name": ["GENE2", "GENE3"],
+            "nmd_rule": ["ptc_50nt_rule", "long_exon"],
+            "recurrence_score": [0.98, 0.96],
+            "molecules_in_group": [120.0, 80.0],
+            "frac_of_group": [0.4, 0.3],
+        }
+    )
+    output = tmp_path / "report.html"
+    render(_example_df(), output, celltype_as_nmd=celltype)
+    html = output.read_text()
+    assert "Cell-type AS-NMD map" in html
+    assert "neuron" in html and "GENE2" in html
+
+
+def test_render_celltype_panel_absent_when_no_data(tmp_path: Path) -> None:
+    output = tmp_path / "report.html"
+    render(_example_df(), output)  # no celltype arg
+    assert "Cell-type AS-NMD map" not in output.read_text()
+
+
 def test_render_nested_dir_and_fallback(tmp_path: Path) -> None:
     out = tmp_path / "a" / "b" / "report.html"
     render(

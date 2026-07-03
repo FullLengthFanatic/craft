@@ -132,6 +132,16 @@ With `--counts`, the per-isoform output gains three recurrence columns:
 These are more robust for filtering than raw read counts because they are
 orthogonal to per-cell sequencing depth.
 
+Instead of a fixed `n_cells_detected >= 3` cut, add `--recurrence-null occupancy`
+(or `betabinom`) to calibrate recurrence to the dataset. This emits
+`recurrence_pvalue` and `recurrence_score` (`1 - pvalue`; higher is more
+confidently recurrent). `occupancy` scatters each isoform's molecules across cells
+in proportion to per-cell depth and asks whether it is detected in more cells than
+that null explains; `betabinom` fits an empirical beta-binomial to the observed
+cells-detected counts (stratified by `structural_category` when `--classification`
+is given). Both default off, leaving the prior columns unchanged. Filter on
+`recurrence_score >= 0.95` for a depth-aware alternative to the fixed count.
+
 ### With cell whitelist
 
 To restrict recurrence computation to called cells (excluding ambient droplets),
@@ -175,6 +185,15 @@ a lost Pfam domain. A highly expressed isoform contributes in proportion to its
 read support. The same table is stored in `annotated.h5ad` under
 `uns['celltype_consequences']`. CRAFT does not cluster or call cell types; supply
 a grouping that already exists in `obs`.
+
+`--group-by` also writes `per_celltype_as_nmd.tsv`: a per-cell-group listing of the
+recurrent, NMD-sensitive isoforms expressed in each group (an AS-NMD map), with
+each isoform's molecule support and fraction of the group. Recurrence uses
+`recurrence_score` when `--recurrence-null` is set, else `n_cells_detected >= 3`.
+This is the question a caller or quantifier cannot answer on its own: which
+NMD-sensitive isoforms recur in which populations. The top rows also appear as a
+"Cell-type AS-NMD map" panel in `report.html`, and the listing is stored under
+`uns['celltype_as_nmd']`.
 
 ### How the ORF is determined
 
@@ -500,8 +519,11 @@ if you care about smORFs.
 craft annotate ... --ptc-threshold-nt 55   # some labs use 55 instead of 50
 ```
 
-These drive the NMD call. `--ptc-threshold-nt`
-also sets the uORF-triggered-NMD window.
+These drive the NMD call. `--ptc-threshold-nt` also sets the uORF-triggered-NMD
+window. `--long-last-exon-nt` is the long-exon rule: it is evaluated on the exon
+that **contains the PTC** (reported as `ptc_exon_length_nt`), not the transcript's
+terminal exon, so a PTC inside a long exon escapes regardless of the last exon's
+length.
 
 ### ORF confidence and long-3'UTR (`--orf-high-confidence` 0.85, `--orf-medium-confidence` 0.5, `--long-utr3-nt` 1000)
 

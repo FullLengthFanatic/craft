@@ -29,11 +29,14 @@ _RESOLVED_ORDER = [
     "ptc_premature",
     "ptc_intron_retained",
     "cds_extension",
+    "start_rescued",
     "no_stop_in_read",
     "resolution_failed",
 ]
 _NMD_ORDER = ["sensitive", "escaped", "not_applicable"]
-_RESOLVED_WITH_STOP = {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+_RESOLVED_WITH_STOP = {
+    "intact", "ptc_premature", "ptc_intron_retained", "cds_extension", "start_rescued"
+}
 
 _TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -81,6 +84,8 @@ _TEMPLATE = """<!DOCTYPE html>
 
 <h2>Notable findings</h2>
 {notable}
+
+{celltype_section}
 
 <p class="footer">CRAFT (Coding Region Annotation From Templates). See docs/features.md.</p>
 </body>
@@ -227,7 +232,31 @@ def _notable_findings_html(df: pd.DataFrame) -> str:
     return "\n".join(sections)
 
 
-def render(per_isoform: pd.DataFrame, output: Path) -> None:
+def _celltype_section_html(celltype: pd.DataFrame | None) -> str:
+    """Per-cell-type AS-NMD panel: recurrent NMD-sensitive isoforms by cell group."""
+    if celltype is None or celltype.empty:
+        return ""
+    n_groups = celltype["cell_group"].nunique()
+    n_iso = celltype["transcript_id"].nunique()
+    top = celltype.head(_NOTABLE_TOP_N * 3)
+    cols = [
+        "cell_group", "parent_gene_name", "transcript_id", "nmd_rule",
+        "recurrence_score", "molecules_in_group", "frac_of_group",
+    ]
+    table = _small_table_html(top, cols)
+    return (
+        '<h2>Cell-type AS-NMD map</h2>'
+        f'<p class="meta">Recurrent, NMD-sensitive isoforms by cell group '
+        f'({n_iso} isoforms across {n_groups} groups; top rows shown, full table in '
+        f'per_celltype_as_nmd.tsv).</p>{table}'
+    )
+
+
+def render(
+    per_isoform: pd.DataFrame,
+    output: Path,
+    celltype_as_nmd: pd.DataFrame | None = None,
+) -> None:
     """Render the interactive HTML report."""
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -270,5 +299,6 @@ def render(per_isoform: pd.DataFrame, output: Path) -> None:
         cascade=cascade_block,
         distributions=distributions,
         notable=_notable_findings_html(per_isoform),
+        celltype_section=_celltype_section_html(celltype_as_nmd),
     )
     output.write_text(html)

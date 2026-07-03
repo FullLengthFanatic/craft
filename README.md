@@ -94,7 +94,7 @@ All three required inputs must use the same chromosome naming (`chr1` vs `1`).
 
 | File                          | Description                                                                 |
 | ----------------------------- | --------------------------------------------------------------------------- |
-| `per_isoform.tsv`             | per-iso annotation table, 63 columns, list columns JSON-encoded             |
+| `per_isoform.tsv`             | per-iso annotation table, 66 columns, list columns JSON-encoded             |
 | `per_isoform.json`            | same content as records; list columns stay as lists                         |
 | `report.html`                 | self-contained interactive report (summary cards + plotly + table)          |
 | `annotated.h5ad`              | AnnData with iso annotations in `var`, per-cell counts in `X` (if given)    |
@@ -183,11 +183,9 @@ premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
 
 ## Status
 
-v1.8.0. The pipeline runs end-to-end on real long-read isoform GTFs at
+v1.9.0. The pipeline runs end-to-end on real long-read isoform GTFs at
 full-genome scale. Validated on a FLIGHT-seq sample (chr22 subset and the
-full bcM0003 sample, ~698k isoforms). Methods paper in preparation: benchmarking
-reference-isoform ORF propagation vs de-novo prediction on simulated truncated
-reads.
+full bcM0003 sample, ~698k isoforms).
 
 ## Citation
 

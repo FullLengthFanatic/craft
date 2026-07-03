@@ -563,6 +563,64 @@ def test_pipeline_recurrence_columns_with_counts(
     assert pd.isna(r.loc["t_novel", "isoform_fraction_within_gene"])
 
 
+def test_pipeline_recurrence_null_populates_calibration_columns(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    import anndata as ad
+    import numpy as np
+
+    counts = ad.AnnData(X=np.array([[2, 0], [1, 3], [0, 1]], dtype=float))
+    counts.obs_names = pd.Index(["c1", "c2", "c3"])
+    counts.var_names = pd.Index(["t_intact", "t_novel"])
+    counts_path = tmp_path / "counts.h5ad"
+    counts.write_h5ad(counts_path)
+
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        counts_path=counts_path,
+        recurrence_null="occupancy",
+    )
+    r = result.set_index("transcript_id")
+    for col in ("recurrence_pvalue", "recurrence_score"):
+        assert col in result.columns
+    # isoforms with molecules get a calibrated score; both are detected here.
+    assert r.loc["t_intact", "recurrence_score"] == pytest.approx(
+        1.0 - r.loc["t_intact", "recurrence_pvalue"]
+    )
+    assert not pd.isna(r.loc["t_intact", "recurrence_pvalue"])
+
+
+def test_pipeline_group_by_writes_celltype_outputs(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    import anndata as ad
+    import numpy as np
+
+    counts = ad.AnnData(X=np.array([[2, 0], [1, 3], [0, 1], [4, 0]], dtype=float))
+    counts.obs_names = pd.Index(["c1", "c2", "c3", "c4"])
+    counts.obs["cell_type"] = ["A", "A", "B", "B"]
+    counts.var_names = pd.Index(["t_intact", "t_novel"])
+    counts_path = tmp_path / "counts.h5ad"
+    counts.write_h5ad(counts_path)
+
+    run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        counts_path=counts_path,
+        group_by="cell_type",
+    )
+    out = pipeline_inputs["output_dir"]
+    # aggregate always writes; the AS-NMD listing + panel appear only when a
+    # recurrent NMD-sensitive isoform exists (none here), so just assert no crash.
+    assert (out / "per_celltype_consequence.tsv").exists()
+    assert (out / "report.html").exists()
+
+
 def test_pipeline_recurrence_columns_nan_without_counts(
     pipeline_inputs: dict[str, Path],
 ) -> None:
@@ -572,6 +630,12 @@ def test_pipeline_recurrence_columns_nan_without_counts(
         output_dir=pipeline_inputs["output_dir"],
         genome_path=pipeline_inputs["genome"],
     )
-    for col in ("total_count", "n_cells_detected", "isoform_fraction_within_gene"):
+    for col in (
+        "total_count",
+        "n_cells_detected",
+        "isoform_fraction_within_gene",
+        "recurrence_pvalue",
+        "recurrence_score",
+    ):
         assert col in result.columns
         assert result[col].isna().all()

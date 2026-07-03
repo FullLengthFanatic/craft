@@ -9,8 +9,8 @@ Long-read isoform functional-consequence annotator. Sits downstream of an isofor
 caller (isoseq+pigeon, FLAIR, IsoQuant, Bambu, FLAMES, SQANTI3). Per isoform it emits
 structural completeness, ORF status (propagated + sequence-resolved + de-novo
 fallback), NMD, UTR features, coding potential, optional Pfam, and per-cell
-recurrence. Output is a 63-column table + HTML report + AnnData. Current version
-v1.8.1. MIT. Public repo: https://github.com/FullLengthFanatic/craft.
+recurrence. Output is a 66-column table + HTML report + AnnData. Current version
+v1.9.0. MIT. Public repo: https://github.com/FullLengthFanatic/craft.
 
 ## Two design commitments (don't violate these)
 
@@ -40,7 +40,7 @@ Four docs, one job each:
 - `docs/craft_explained.md` - detailed, code-anchored design guide: how/why per
   stage + snippets + file:line + permalinks pinned to the v1.8.0 commit, the 18 CLI
   knobs vs source-only params, strengths/limitations vs tools, interpretation FAQ.
-- `docs/features.md` - per-column dictionary (authoritative for the 63 columns).
+- `docs/features.md` - per-column dictionary (authoritative for the 66 columns).
 
 ## Hard rule on numbers
 
@@ -52,7 +52,7 @@ Any number that appears in docs must trace to a committed script/output:
 ## Code layout
 
 `src/craft/`: `cli.py` (Click entry, all flags) -> `pipeline.py::run_annotate`
-(orchestration, `_OUTPUT_COLUMNS` = the canonical 63-column order). Stages under
+(orchestration, `_OUTPUT_COLUMNS` = the canonical 66-column order). Stages under
 `core/`: `intervals`, `completeness`, `orf/{propagation,denovo,resolve,confidence}`,
 `nmd`, `utr3`, `coding_potential`, `pfam`, `polya_atlas`, `recurrence`. IO in `io/`,
 writers in `export/` and `report/`.

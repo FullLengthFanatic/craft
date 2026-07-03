@@ -9,6 +9,7 @@ import scipy.sparse as sp
 from craft.core.recurrence import (
     compute_recurrence,
     load_cell_whitelist,
+    recurrence_confidence,
     within_gene_fraction,
 )
 
@@ -78,6 +79,49 @@ def test_within_gene_fraction_orphan_and_nan():
     assert np.isnan(frac[0])  # orphan: empty gene id
     assert np.isnan(frac[1])  # unmeasured isoform
     assert frac[2] == pytest.approx(1.0)  # only measured isoform of g2
+
+
+def test_recurrence_confidence_none_leaves_nan():
+    a = _adata(_X, ["A", "B", "C"], ["c1", "c2", "c3"])
+    conf = recurrence_confidence(a, compute_recurrence(a), method="none")
+    assert conf["recurrence_pvalue"].isna().all()
+    assert conf["recurrence_score"].isna().all()
+    assert list(conf.columns) == ["transcript_id", "recurrence_pvalue", "recurrence_score"]
+
+
+def test_occupancy_ranks_dispersed_above_concentrated():
+    n = 10
+    # disp and burst share total=6 but differ in spread; filler gives every cell depth.
+    disp = np.array([1, 1, 1, 1, 1, 1, 0, 0, 0, 0], float)
+    burst = np.array([6, 0, 0, 0, 0, 0, 0, 0, 0, 0], float)
+    filler = np.ones(n)
+    x = np.vstack([disp, burst, filler]).T  # cells x isoforms
+    a = _adata(x, ["disp", "burst", "filler"], [f"c{i}" for i in range(n)])
+    conf = recurrence_confidence(a, compute_recurrence(a), method="occupancy").set_index(
+        "transcript_id"
+    )
+    assert conf.loc["disp", "recurrence_score"] > conf.loc["burst", "recurrence_score"]
+    assert conf.loc["disp", "recurrence_pvalue"] < conf.loc["burst", "recurrence_pvalue"]
+
+
+def test_betabinom_flags_recurrent_outlier():
+    n = 10
+    cols, names = [], []
+    for i in range(11):  # rare isoforms, each in one distinct cell
+        v = np.zeros(n)
+        v[i % n] = 1.0
+        cols.append(v)
+        names.append(f"rare{i}")
+    recurrent = np.zeros(n)  # one isoform detected in 8 cells
+    recurrent[:8] = 1.0
+    cols.append(recurrent)
+    names.append("recurrent")
+    a = _adata(np.vstack(cols).T, names, [f"c{i}" for i in range(n)])
+    conf = recurrence_confidence(a, compute_recurrence(a), method="betabinom").set_index(
+        "transcript_id"
+    )
+    assert conf.loc["recurrent", "recurrence_pvalue"] < conf.loc["rare0", "recurrence_pvalue"]
+    assert conf.loc["recurrent", "recurrence_score"] > 0.5
 
 
 def test_load_cell_whitelist(tmp_path):

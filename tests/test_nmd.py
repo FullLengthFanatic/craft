@@ -134,6 +134,49 @@ def test_start_proximal_escape() -> None:
     assert r["nmd_rule"] == "start_proximal"
 
 
+def test_long_exon_rule_uses_ptc_bearing_exon_not_terminal_exon() -> None:
+    # PTC sits in a long (700 bp) internal exon; the terminal exon is short (100 bp).
+    # The long-exon rule must fire on the PTC-bearing exon, so this escapes.
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 200, "+", "t1"),
+            ("chr1", 300, 1000, "+", "t1"),
+            ("chr1", 1100, 1200, "+", "t1"),
+        ]
+    )
+    # stop last coding base at 899, inside the 700 bp internal exon, 101 nt from the
+    # exon2/exon3 junction (so not within 50 nt) and CDS >= 150 bp.
+    res = pd.DataFrame(
+        [_res("t1", "ptc_premature", [("chr1", 150, 200, "+"), ("chr1", 300, 900, "+")])]
+    )
+    r = _row(predict(iso, res, None), "t1")
+    assert r["nmd_status"] == NMDStatus.ESCAPED.value
+    assert r["nmd_rule"] == "long_exon"
+    assert r["ptc_exon_length_nt"] == 700
+    assert r["last_exon_length_nt"] == 100
+
+
+def test_long_terminal_exon_does_not_rescue_ptc_in_short_exon() -> None:
+    # Mirror case: PTC in a short (100 bp) internal exon, terminal exon is long
+    # (700 bp). The old code escaped on terminal-exon length; the fix keeps it
+    # sensitive because the PTC-bearing exon is short.
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 200, "+", "t1"),
+            ("chr1", 300, 400, "+", "t1"),
+            ("chr1", 500, 1200, "+", "t1"),
+        ]
+    )
+    res = pd.DataFrame(
+        [_res("t1", "ptc_premature", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])]
+    )
+    r = _row(predict(iso, res, None), "t1")
+    assert r["nmd_status"] == NMDStatus.SENSITIVE.value
+    assert r["nmd_rule"] == "ptc_50nt_rule"
+    assert r["ptc_exon_length_nt"] == 100
+    assert r["last_exon_length_nt"] == 700
+
+
 def test_minus_strand_sensitive() -> None:
     iso = _iso_pr(
         [

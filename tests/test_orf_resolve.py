@@ -213,6 +213,40 @@ def test_no_uorf_when_5utr_clean(tmp_path: Path) -> None:
     assert not r["uorf_triggers_nmd"]
 
 
+def test_start_lost_is_frame_rescued_to_first_inframe_atg(tmp_path: Path) -> None:
+    # Parent CDS starts at genomic 112 (tx12). The isoform is 5'-truncated to
+    # [120,130)+[200,240), so the parent start (112) is gone -> START_LOST. In the
+    # parent frame the isoform carries an ATG at tx1 followed by an in-frame stop.
+    parent_exons = [(100, 130), (200, 240)]
+    cds = _cds_for(parent_exons, "+", 12, 60)
+    ref = _reference(parent_exons, cds, "+", "ref")
+    iso = _exons([(120, 130), (200, 240)], "+", "t1")
+    # iso spliced seq: "C" + "ATG" + "GCT"*3 + "TAA" + A-tail; the ATG sits on the
+    # parent reading frame (frame_offset 1), so it is the rescued start.
+    fills = [(120, "CATGGCTGCT"), (200, "GCTTAA" + "A" * 34)]
+    genome = _write_genome(tmp_path, 240, fills)
+    propagated, resolved = _run(iso, ref, genome)
+    assert _row(propagated, "t1")["orf_outcome"] == ORFOutcome.START_LOST.value
+    r = _row(resolved, "t1")
+    assert r["resolved_orf_status"] == ResolvedORFStatus.START_RESCUED.value
+    assert r["stop_in_transcript"]
+    assert not r["frame_consistent"]
+    assert r["resolved_aa_length"] == 4
+
+
+def test_start_lost_without_inframe_atg_stays_resolution_failed(tmp_path: Path) -> None:
+    parent_exons = [(100, 130), (200, 240)]
+    cds = _cds_for(parent_exons, "+", 12, 60)
+    ref = _reference(parent_exons, cds, "+", "ref")
+    iso = _exons([(120, 130), (200, 240)], "+", "t1")
+    # No ATG anywhere in the isoform sequence -> nothing to rescue.
+    fills = [(120, "CCCGGCTGCT"), (200, "GCTTAA" + "C" * 34)]
+    genome = _write_genome(tmp_path, 240, fills)
+    propagated, resolved = _run(iso, ref, genome)
+    assert _row(propagated, "t1")["orf_outcome"] == ORFOutcome.START_LOST.value
+    assert _row(resolved, "t1")["resolved_orf_status"] == ResolvedORFStatus.RESOLUTION_FAILED.value
+
+
 def test_empty_inputs_return_empty_frame(tmp_path: Path) -> None:
     genome = _write_genome(tmp_path, 240, [])
     out = resolve(pr.PyRanges(), pd.DataFrame(), pr.PyRanges(), genome)

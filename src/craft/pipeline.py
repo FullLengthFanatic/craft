@@ -25,12 +25,13 @@ from craft.core.polya_atlas import build_atlas_index, load_atlas, match_iso_end
 from craft.core.recurrence import (
     compute_recurrence,
     load_cell_whitelist,
+    recurrence_confidence,
     within_gene_fraction,
 )
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
-from craft.export.celltype import aggregate_consequences
+from craft.export.celltype import aggregate_consequences, celltype_as_nmd
 from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
 from craft.report.html import render as render_report
@@ -100,6 +101,7 @@ _OUTPUT_COLUMNS = [
     "nmd_basis",
     "stop_to_last_junction_nt",
     "last_exon_length_nt",
+    "ptc_exon_length_nt",
     "long_utr3_triggers_nmd",
     # UTRs
     "iso_utr3_length_nt",
@@ -129,6 +131,8 @@ _OUTPUT_COLUMNS = [
     "total_count",
     "n_cells_detected",
     "isoform_fraction_within_gene",
+    "recurrence_pvalue",
+    "recurrence_score",
 ]
 
 _RESOLVE_COLUMNS = (
@@ -452,6 +456,7 @@ def run_annotate(
     classification_path: Path | None = None,
     classification_columns: str = "structural_category",
     group_by: str | None = None,
+    recurrence_null: str = "none",
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -668,7 +673,28 @@ def run_annotate(
     if counts_adata is not None:
         rec_df = compute_recurrence(counts_adata, whitelist)
         merged = merged.merge(rec_df, on="transcript_id", how="left")
-    for col in ("total_count", "n_cells_detected"):
+        if recurrence_null != "none":
+            class_col = next(
+                (c for c in ("structural_category", "class_structural_category")
+                 if c in merged.columns),
+                None,
+            )
+            classes = (
+                rec_df["transcript_id"].map(merged.set_index("transcript_id")[class_col])
+                if class_col is not None
+                else None
+            )
+            conf_df = recurrence_confidence(
+                counts_adata, rec_df, method=recurrence_null,
+                cell_whitelist=whitelist, classes=classes,
+            )
+            merged = merged.merge(conf_df, on="transcript_id", how="left")
+    elif recurrence_null != "none":
+        print(
+            "[craft] --recurrence-null given but no --counts; recurrence calibration skipped.",
+            file=sys.stderr,
+        )
+    for col in ("total_count", "n_cells_detected", "recurrence_pvalue", "recurrence_score"):
         if col not in merged.columns:
             merged[col] = np.nan
     merged["isoform_fraction_within_gene"] = within_gene_fraction(
@@ -679,10 +705,14 @@ def run_annotate(
 
     adata = to_anndata(merged, counts=counts_adata)
 
+    as_nmd_df: pd.DataFrame | None = None
     if group_by is not None and counts_adata is not None:
         try:
             aggregate_consequences(
                 adata, merged, group_by, output_dir / "per_celltype_consequence.tsv"
+            )
+            as_nmd_df = celltype_as_nmd(
+                adata, merged, group_by, output_dir / "per_celltype_as_nmd.tsv"
             )
         except ValueError as exc:
             print(f"[craft] Skipping per-cell-type aggregation: {exc}", file=sys.stderr)
@@ -694,11 +724,15 @@ def run_annotate(
 
     write_h5ad(adata, output_dir / "annotated.h5ad")
 
-    _write_outputs(merged, output_dir)
+    _write_outputs(merged, output_dir, celltype_as_nmd=as_nmd_df)
     return merged
 
 
-def _write_outputs(merged: pd.DataFrame, output_dir: Path) -> None:
+def _write_outputs(
+    merged: pd.DataFrame,
+    output_dir: Path,
+    celltype_as_nmd: pd.DataFrame | None = None,
+) -> None:
     tsv_df = merged.copy()
     for col in _LIST_COLUMNS:
         if col in tsv_df.columns:
@@ -711,4 +745,4 @@ def _write_outputs(merged: pd.DataFrame, output_dir: Path) -> None:
     with open(output_dir / "per_isoform.json", "w") as fh:
         json.dump(records, fh, default=str, indent=2)
 
-    render_report(merged, output_dir / "report.html")
+    render_report(merged, output_dir / "report.html", celltype_as_nmd=celltype_as_nmd)

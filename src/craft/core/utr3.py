@@ -31,7 +31,7 @@ _RC_TABLE = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
 # Resolved-ORF statuses (from craft.core.orf.resolve) that carry a real stop.
 _RESOLVED_WITH_STOP = frozenset(
-    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension"}
+    {"intact", "ptc_premature", "ptc_intron_retained", "cds_extension", "start_rescued"}
 )
 
 LONG_UTR3_NT = 1000

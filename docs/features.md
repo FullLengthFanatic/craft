@@ -31,7 +31,7 @@ to the de-novo ORF; `nmd_basis` records which ORF was used (`resolved` /
 
 | File | When | Contents |
 | --- | --- | --- |
-| `per_isoform.tsv` | always | One row per isoform, 63 columns. List-valued columns are JSON-encoded. |
+| `per_isoform.tsv` | always | One row per isoform, 66 columns. List-valued columns are JSON-encoded. |
 | `per_isoform.json` | always | Same content as records; list columns stay as lists. |
 | `report.html` | always | Self-contained interactive summary. |
 | `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
@@ -73,12 +73,12 @@ Parent CDS coordinates projected onto the isoform by intersection.
 ## ORF: sequence resolution (v1.5)
 
 Reconstructed from the isoform's own spliced sequence. Computed for every
-isoform whose parent start codon is observed (outcomes other than `start_lost`,
-`no_parent`, `no_parent_cds`).
+isoform whose parent start codon is observed, plus a frame-aware rescue for
+`start_lost` isoforms (`no_parent` / `no_parent_cds` have nothing to anchor to).
 
 | Column | Type | Meaning |
 | --- | --- | --- |
-| `resolved_orf_status` | categorical | `intact` (resolved stop matches the parent stop), `ptc_premature` (a premature stop from a frameshift or exon skip), `ptc_intron_retained` (premature stop and a retained CDS intron), `cds_extension` (read-through past the parent stop, a stop-loss), `no_stop_in_read` (translation runs off the 3' end), `resolution_failed` (no usable start anchor). |
+| `resolved_orf_status` | categorical | `intact` (resolved stop matches the parent stop), `ptc_premature` (a premature stop from a frameshift or exon skip), `ptc_intron_retained` (premature stop and a retained CDS intron), `cds_extension` (read-through past the parent stop, a stop-loss), `start_rescued` (5' truncation lost the annotated start; the ORF was rescued from the first in-frame ATG in the parent frame), `no_stop_in_read` (translation runs off the 3' end), `resolution_failed` (no usable anchor). |
 | `resolved_stop_pos` | int / null | Genomic position of the last coding base of the resolved CDS; null when no in-frame stop was found or resolution failed. |
 | `resolved_cds_bp` | int | Resolved CDS length in bp (0 when no stop found). |
 | `resolved_aa_length` | int | Resolved protein length in amino acids. |
@@ -90,8 +90,9 @@ isoform whose parent start codon is observed (outcomes other than `start_lost`,
 
 ## ORF: de novo prediction
 
-Used only for isoforms with no usable parent (`no_parent`, `no_parent_cds`,
-`start_lost`). Longest ATG-initiated ORF from orfipy on the spliced sequence.
+Used for isoforms with no usable parent (`no_parent`, `no_parent_cds`) and for
+`start_lost` isoforms where the frame-aware rescue found no in-frame ATG. Longest
+ATG-initiated ORF from orfipy on the spliced sequence.
 
 | Column | Type | Meaning |
 | --- | --- | --- |
@@ -143,11 +144,12 @@ ORF, always `low` confidence), or `none` (not applicable).
 | Column | Type | Meaning |
 | --- | --- | --- |
 | `nmd_status` | categorical | `sensitive`, `escaped`, or `not_applicable`. |
-| `nmd_rule` | str | Which escape rule fired (or `ptc_50nt_rule` when sensitive). |
+| `nmd_rule` | str | Which escape rule fired: `stop_in_last_exon`, `within_50nt_of_last_junction`, `start_proximal`, `long_exon` (or `ptc_50nt_rule` when sensitive). |
 | `nmd_confidence` | categorical | `high` (resolved intact ORF), `medium` (resolved but altered: PTC / IR / extension), `low` (de-novo ORF), `none` (not applicable). |
 | `nmd_basis` | str | `resolved` / `denovo` / `none` — which ORF the call used. |
 | `stop_to_last_junction_nt` | int / null | mRNA distance from the stop to the last exon-exon junction. |
-| `last_exon_length_nt` | int / null | Last exon length. |
+| `last_exon_length_nt` | int / null | Terminal exon length (descriptive). |
+| `ptc_exon_length_nt` | int / null | Length of the exon containing the resolved stop; drives the `long_exon` escape rule (Lindeboom et al. 2016). |
 | `long_utr3_triggers_nmd` | bool | Advisory: the resolved 3'UTR is longer than `--long-utr3-nt` (default 1000). |
 
 Advisory upstream-ORF flags (from the resolved engine, noisier by nature):
@@ -240,9 +242,13 @@ is more robust than thresholding total counts.
 | `total_count` | int / null | Total UMI-corrected molecules for the isoform, summed across cells. Computed over called cells when `--cell-whitelist` is given; over every barcode (including ambient droplets) otherwise. Null when `--counts` is absent or the isoform is not in the count matrix. |
 | `n_cells_detected` | int / null | Number of cells with at least one molecule of the isoform, over the same cell set as `total_count`. A depth-stable recurrence signal: an isoform in many independent cells is supported regardless of per-cell sequencing depth. Null without `--counts`. |
 | `isoform_fraction_within_gene` | float / null | `total_count` divided by the summed `total_count` of all isoforms sharing the same `parent_gene_id`. A relative-abundance signal; the ratio cancels depth variation. Null for isoforms without a parent gene or without measured counts. |
+| `recurrence_pvalue` | float / null | Upper-tail probability of the observed `n_cells_detected` under `--recurrence-null` (`occupancy` or `betabinom`). Small = detected in more cells than the null explains. Null unless `--recurrence-null` is set (and NaN for isoforms with no molecules). |
+| `recurrence_score` | float / null | `1 - recurrence_pvalue`; higher = more confidently recurrent. A dataset-calibrated alternative to the fixed `n_cells_detected >= 3` cut. |
 
 **Recommended filtering:** `n_cells_detected >= 3` selects isoforms recurrent
-across at least three independent cells, robust to depth-dependent noise.
+across at least three independent cells, robust to depth-dependent noise. For a
+depth- and dataset-calibrated cut instead of a fixed count, set `--recurrence-null`
+and filter on `recurrence_score` (e.g. `>= 0.95`).
 
 ## External classification passthrough
 
@@ -320,12 +326,13 @@ craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --outpu
 | `--tolerance` | 50 | End slack (bp) before calling a truncation. |
 | `--ptc-threshold-nt` | 50 | PTC rule distance to the last junction. |
 | `--start-proximal-nt` | 150 | CDS below this (bp) escapes NMD. |
-| `--long-last-exon-nt` | 400 | Last exon above this (bp) escapes NMD. |
+| `--long-last-exon-nt` | 400 | The exon containing the PTC above this (bp) escapes NMD (long-exon rule). |
 | `--min-orf-aa` | 50 | Minimum de novo ORF length. |
 | `--orf-high-confidence` | 0.85 | High ORF-confidence cutoff. |
 | `--orf-medium-confidence` | 0.5 | Medium ORF-confidence cutoff. |
 | `--long-utr3-nt` | 1000 | Long-3'UTR NMD flag threshold. |
 | `--prefer-coding-parent` | off | Break parent-selection ties toward CDS-bearing transcripts (off keeps results reproducible). |
+| `--recurrence-null` | none | Calibrate recurrence against a null (needs `--counts`): `occupancy` (depth-aware) or `betabinom`; emits `recurrence_pvalue` / `recurrence_score`. |
 
 ## Filter recipes
 
