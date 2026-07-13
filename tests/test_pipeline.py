@@ -616,7 +616,7 @@ def test_pipeline_group_by_writes_celltype_outputs(
     )
     out = pipeline_inputs["output_dir"]
     # aggregate always writes; the AS-NMD listing + panel appear only when a
-    # recurrent NMD-sensitive isoform exists (none here), so just assert no crash.
+    # predicted NMD candidate exists (none here), so just assert no crash.
     assert (out / "per_celltype_consequence.tsv").exists()
     assert (out / "report.html").exists()
 
@@ -639,3 +639,31 @@ def test_pipeline_recurrence_columns_nan_without_counts(
     ):
         assert col in result.columns
         assert result[col].isna().all()
+
+
+def test_pipeline_joins_evidence_and_independent_orf(
+    pipeline_inputs: dict[str, Path], tmp_path: Path
+) -> None:
+    evidence = tmp_path / "evidence.tsv"
+    evidence.write_text(
+        "transcript_id\tunique_molecule_fraction\tcanonical_junction_fraction"
+        "\tpolya_tail_fraction\tinternal_priming_fraction\n"
+        "t_intact\t0.95\t1\t0.9\t0.01\n"
+    )
+    comparator = tmp_path / "comparator.gtf"
+    comparator.write_text(
+        'chr1\tORFanage\tCDS\t151\t200\t.\t+\t0\ttranscript_id "t_intact";\n'
+        'chr1\tORFanage\tCDS\t301\t400\t.\t+\t1\ttranscript_id "t_intact";\n'
+        'chr1\tORFanage\tCDS\t501\t550\t.\t+\t0\ttranscript_id "t_intact";\n'
+    )
+    result = run_annotate(
+        isoforms_path=pipeline_inputs["isoforms"],
+        reference_path=pipeline_inputs["reference"],
+        output_dir=pipeline_inputs["output_dir"],
+        genome_path=pipeline_inputs["genome"],
+        evidence_path=evidence,
+        orf_comparator_gtf=comparator,
+    ).set_index("transcript_id")
+    assert result.loc["t_intact", "isoform_evidence_tier"] == "strong"
+    assert bool(result.loc["t_intact", "comparator_orf_present"])
+    assert result.loc["t_novel", "isoform_evidence_tier"] != "artifact_likely"

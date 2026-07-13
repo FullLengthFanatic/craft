@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Began the v2 evidence-aware redesign (`2.0.0.dev0`). Structure evidence,
+  recurrence, ORF completeness, and RNA-surveillance prediction now have separate
+  semantics and fields.
+- Parent selection now ranks explicit upstream hints, gene consistency, exact or
+  contained intron chains, junction precision/recall, normalized overlap, and
+  curated reference metadata. Candidate count, margin, reason, and ambiguity are
+  reported.
+- 5' and 3' transcript truncation are represented as left/right-censored partial
+  CDS. Downstream ATG inference is opt-in with `--infer-alternative-start`.
+- NMD output is reframed as predicted susceptibility with a rule severity score,
+  evidence tier, surveillance mechanism, and limitations. Non-stop-decay candidates
+  are separated.
+- Coding-potential cross-validation now rebuilds sequence-derived features and
+  scaling inside each training fold.
+- Dependency bounds avoid incompatible pandas/anndata/zarr API combinations.
+
+### Added
+- Reference CDS/start/stop/phase and MANE/APPRIS/CCDS/basic-tag metadata.
+- `--evidence-table`: transparent, uncalibrated aggregation of molecule, junction,
+  end, replicate, mapping, and artifact evidence; raw features remain in output.
+- `--orf-comparator-gtf`: exact independent start/stop/CDS agreement fields for an
+  ORFanage-like GTF.
+- Exact resolved start and stop-codon positions, observed-boundary flags, censoring,
+  partial-CDS intervals, detection fraction, and molecules per detected cell.
+- Scientific design and v1 migration documents.
+
 ## [1.9.0] - 2026-07-03
 
 Functional additions and one NMD correctness fix. Backward-compatible defaults:

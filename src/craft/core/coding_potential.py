@@ -1,19 +1,20 @@
-"""Coding-potential scoring, self-calibrated to the supplied reference.
+"""Coding-potential scoring with a model trained on the supplied reference.
 
 CRAFT already loads a reference annotation that contains both coding transcripts
 (CDS rows) and non-coding ones (transcripts with exons but no CDS). This module
 uses them as a training set: it builds a hexamer coding/non-coding log-likelihood
 table from the reference, derives three features per ORF, fits a logistic
 regression, and scores every isoform's best ORF. No model file is shipped and no
-external tool is required; the model calibrates to whatever organism the
-reference describes.
+external tool is required; the model adapts its training data to the organism
+described by the reference.
 
 Features (the dominant CPAT signals):
 - hexamer usage log-likelihood ratio (coding vs non-coding), per-ORF mean;
 - ORF length (log10 bp);
 - ORF coverage (ORF bp / transcript bp).
 
-The score is a calibrated probability in [0, 1]; a held-out AUC is reported for
+The score is a classifier score in [0, 1], not a calibrated biological
+probability; a leakage-free internal cross-validation AUC is reported for
 validation. This is a screening score, not a substitute for a curated
 coding/non-coding classifier; confirm borderline calls with CPC2/CPAT.
 """
@@ -259,52 +260,76 @@ def build_model(
     # ORF for non-coding) against its full transcript length.
     coding_counts = np.zeros(len(_HEXAMERS))
     noncoding_counts = np.zeros(len(_HEXAMERS))
-    coding_feat: list[tuple[str, int]] = []
-    noncoding_feat: list[tuple[str, int]] = []
+    # (candidate ORF, transcript length, sequence used to train the hexamer table)
+    coding_feat: list[tuple[str, int, str]] = []
+    noncoding_feat: list[tuple[str, int, str]] = []
     for tx in coding_sel:
         cds_seq = _spliced_sequence(cds_iv.get(tx, []), genome)
         mrna_len = sum(e - s for _, s, e, _ in coding_exon_iv.get(tx, [])) or len(cds_seq)
         coding_counts += _hexamer_counts(cds_seq)
-        coding_feat.append((cds_seq, mrna_len))
+        coding_feat.append((cds_seq, mrna_len, cds_seq))
     for tx in noncoding_sel:
         tx_seq = _spliced_sequence(exon_iv.get(tx, []), genome)
         noncoding_counts += _hexamer_counts(tx_seq)
-        noncoding_feat.append((_longest_orf_seq(tx_seq), len(tx_seq)))
+        noncoding_feat.append((_longest_orf_seq(tx_seq), len(tx_seq), tx_seq))
 
     log_ratio = _log_ratio_table(coding_counts, noncoding_counts)
 
     rows = []
     labels = []
-    for orf_seq, tx_len in coding_feat:
+    for orf_seq, tx_len, _ in coding_feat:
         rows.append(_features(orf_seq, tx_len, log_ratio))
         labels.append(1)
-    for orf_seq, tx_len in noncoding_feat:
+    for orf_seq, tx_len, _ in noncoding_feat:
         rows.append(_features(orf_seq, tx_len, log_ratio))
         labels.append(0)
     x = np.array(rows, dtype=np.float64)
     y = np.array(labels, dtype=np.float64)
 
-    mean = x.mean(axis=0)
-    std = x.std(axis=0)
-    std[std == 0] = 1.0
-    xz = (x - mean) / std
+    records = [*coding_feat, *noncoding_feat]
 
-    # Cross-validated AUC: K deterministic folds, refit on train, score on test,
-    # average. More stable than a single split (a single 80/20 split underreported
-    # by ~0.005 on GENCODE v45).
+    # Cross-validated AUC.  Every fold rebuilds the hexamer table and feature
+    # scaling on its training transcripts.  Earlier releases derived both from
+    # all transcripts before splitting, leaking test-fold sequence information.
     idx = np.arange(len(y))
     fold_aucs: list[float] = []
     for k in range(_CV_FOLDS):
         test_mask = idx % _CV_FOLDS == k
         if test_mask.sum() == 0 or (~test_mask).sum() == 0:
             continue
-        w_tr = _fit_logistic(xz[~test_mask], y[~test_mask])
-        s_te = _sigmoid(np.hstack([xz[test_mask], np.ones((test_mask.sum(), 1))]) @ w_tr)
+        train_idx = idx[~test_mask]
+        test_idx = idx[test_mask]
+        fold_coding = np.zeros(len(_HEXAMERS))
+        fold_noncoding = np.zeros(len(_HEXAMERS))
+        for i in train_idx:
+            source_seq = records[int(i)][2]
+            if y[int(i)] == 1:
+                fold_coding += _hexamer_counts(source_seq)
+            else:
+                fold_noncoding += _hexamer_counts(source_seq)
+        fold_ratio = _log_ratio_table(fold_coding, fold_noncoding)
+        x_train = np.array(
+            [_features(records[int(i)][0], records[int(i)][1], fold_ratio) for i in train_idx]
+        )
+        x_test = np.array(
+            [_features(records[int(i)][0], records[int(i)][1], fold_ratio) for i in test_idx]
+        )
+        fold_mean = x_train.mean(axis=0)
+        fold_std = x_train.std(axis=0)
+        fold_std[fold_std == 0] = 1.0
+        x_train = (x_train - fold_mean) / fold_std
+        x_test = (x_test - fold_mean) / fold_std
+        w_tr = _fit_logistic(x_train, y[train_idx])
+        s_te = _sigmoid(np.hstack([x_test, np.ones((x_test.shape[0], 1))]) @ w_tr)
         a = _auc(s_te, y[test_mask])
         if a == a:
             fold_aucs.append(a)
     auc = float(np.mean(fold_aucs)) if fold_aucs else float("nan")
 
+    mean = x.mean(axis=0)
+    std = x.std(axis=0)
+    std[std == 0] = 1.0
+    xz = (x - mean) / std
     weights = _fit_logistic(xz, y)
     return {
         "log_ratio": log_ratio,
@@ -315,6 +340,7 @@ def build_model(
         "n_coding": len(coding_sel),
         "n_noncoding": len(noncoding_sel),
         "heldout_auc": auc,
+        "validation": "leakage_free_internal_5fold",
     }
 
 

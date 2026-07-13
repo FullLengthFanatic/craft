@@ -58,6 +58,8 @@ class ResolvedORFStatus(str, Enum):
     CDS_EXTENSION = "cds_extension"
     NO_STOP_IN_READ = "no_stop_in_read"
     START_RESCUED = "start_rescued"
+    LEFT_CENSORED = "left_censored"
+    RIGHT_CENSORED = "right_censored"
     RESOLUTION_FAILED = "resolution_failed"
 
 
@@ -65,6 +67,8 @@ _COLUMNS = [
     "transcript_id",
     "resolved_orf_status",
     "resolved_stop_pos",
+    "resolved_start_pos",
+    "resolved_stop_codon_pos",
     "resolved_cds_bp",
     "resolved_aa_length",
     "resolved_cds_intervals",
@@ -74,6 +78,12 @@ _COLUMNS = [
     "stop_in_transcript",
     "uorf_count",
     "uorf_triggers_nmd",
+    "orf_start_observed",
+    "orf_stop_observed",
+    "orf_censoring",
+    "partial_cds_bp",
+    "partial_cds_intervals",
+    "alternative_start_inferred",
 ]
 
 
@@ -137,6 +147,25 @@ def _tx_to_genomic_intervals(
         cum = ex_tx_end
     out.sort(key=lambda x: x[1])
     return out
+
+
+def _tx_coord_to_genomic_pos(
+    coord: int, starts: np.ndarray, ends: np.ndarray, strand: str
+) -> int | None:
+    """Map one transcript coordinate to its genomic base position."""
+    if coord < 0:
+        return None
+    rng = range(len(starts)) if strand == "+" else range(len(starts) - 1, -1, -1)
+    cum = 0
+    for i in rng:
+        start = int(starts[i])
+        end = int(ends[i])
+        length = end - start
+        if coord < cum + length:
+            offset = coord - cum
+            return start + offset if strand == "+" else end - 1 - offset
+        cum += length
+    return None
 
 
 def _walk_to_stop(seq: str, start_tx: int) -> tuple[int, bool]:
@@ -316,6 +345,8 @@ def _rescue_start_lost(
         "transcript_id": tx_id,
         "resolved_orf_status": ResolvedORFStatus.START_RESCUED.value,
         "resolved_stop_pos": resolved_stop,
+        "resolved_start_pos": _tx_coord_to_genomic_pos(rescued_start, starts, ends, strand),
+        "resolved_stop_codon_pos": _tx_coord_to_genomic_pos(stop_tx, starts, ends, strand),
         "resolved_cds_bp": cds_bp,
         "resolved_aa_length": cds_bp // 3,
         "resolved_cds_intervals": intervals,
@@ -325,7 +356,41 @@ def _rescue_start_lost(
         "stop_in_transcript": True,
         "uorf_count": uorf_count,
         "uorf_triggers_nmd": uorf_triggers,
+        "orf_start_observed": False,
+        "orf_stop_observed": True,
+        "orf_censoring": "left",
+        "partial_cds_bp": cds_bp,
+        "partial_cds_intervals": intervals,
+        "alternative_start_inferred": True,
     }
+
+
+def _left_censored_row(
+    tx_id: str,
+    chrom: str,
+    strand: str,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    prop_intervals: list[tuple] | None,
+) -> dict:
+    """Represent an observed CDS fragment without inventing a translation start."""
+    intervals = list(prop_intervals or [])
+    bp = sum(int(end) - int(start) for _, start, end, _ in intervals)
+    row = _failed_row(tx_id)
+    row.update(
+        {
+            "resolved_orf_status": ResolvedORFStatus.LEFT_CENSORED.value,
+            "resolved_start_pos": None,
+            "resolved_stop_codon_pos": None,
+            "resolved_cds_intervals": [],
+            "orf_start_observed": False,
+            "orf_stop_observed": False,
+            "orf_censoring": "left",
+            "partial_cds_bp": bp,
+            "partial_cds_intervals": intervals,
+        }
+    )
+    return row
 
 
 def resolve(
@@ -334,6 +399,7 @@ def resolve(
     reference: pr.PyRanges,
     genome_fasta,
     ptc_threshold_nt: int = UORF_PTC_THRESHOLD_NT,
+    allow_start_rescue: bool = False,
 ) -> pd.DataFrame:
     """Reconstruct the true ORF for each resolvable isoform.
 
@@ -407,13 +473,19 @@ def resolve(
             seq = _spliced_sequence(chrom, starts, ends, strand, genome)
 
             if outcome == ORFOutcome.START_LOST.value:
-                rescued = _rescue_start_lost(
-                    tx_id, chrom, strand, starts, ends, seq,
-                    prop_iv.get(tx_id), parent_cds_intervals.get(parent_tx, []),
-                    parent_introns.get(parent_tx, []), parent_cds_span[parent_tx],
-                    ptc_threshold_nt,
+                rescued = None
+                if allow_start_rescue:
+                    rescued = _rescue_start_lost(
+                        tx_id, chrom, strand, starts, ends, seq,
+                        prop_iv.get(tx_id), parent_cds_intervals.get(parent_tx, []),
+                        parent_introns.get(parent_tx, []), parent_cds_span[parent_tx],
+                        ptc_threshold_nt,
+                    )
+                rows.append(
+                    rescued if rescued is not None else _left_censored_row(
+                        tx_id, chrom, strand, starts, ends, prop_iv.get(tx_id)
+                    )
                 )
-                rows.append(rescued if rescued is not None else _failed_row(tx_id))
                 continue
 
             if outcome not in _RESOLVABLE_OUTCOMES:
@@ -447,12 +519,23 @@ def resolve(
             )
 
             status, ptc, frame_ok = _classify(found, stop_tx, parent_stop_tx, ir)
+            if not found:
+                status = ResolvedORFStatus.RIGHT_CENSORED
+            partial_intervals = (
+                _tx_to_genomic_intervals(start_tx, len(seq), chrom, starts, ends, strand)
+                if not found else intervals
+            )
+            partial_bp = len(seq) - start_tx if not found else cds_bp
 
             rows.append(
                 {
                     "transcript_id": tx_id,
                     "resolved_orf_status": status.value,
                     "resolved_stop_pos": resolved_stop,
+                    "resolved_start_pos": _tx_coord_to_genomic_pos(start_tx, starts, ends, strand),
+                    "resolved_stop_codon_pos": (
+                        _tx_coord_to_genomic_pos(stop_tx, starts, ends, strand) if found else None
+                    ),
                     "resolved_cds_bp": cds_bp if found else 0,
                     "resolved_aa_length": cds_bp // 3 if found else 0,
                     "resolved_cds_intervals": intervals if found else [],
@@ -462,6 +545,12 @@ def resolve(
                     "stop_in_transcript": found,
                     "uorf_count": uorf_count,
                     "uorf_triggers_nmd": uorf_triggers,
+                    "orf_start_observed": True,
+                    "orf_stop_observed": found,
+                    "orf_censoring": "none" if found else "right",
+                    "partial_cds_bp": partial_bp,
+                    "partial_cds_intervals": partial_intervals,
+                    "alternative_start_inferred": False,
                 }
             )
         return pd.DataFrame(rows, columns=_COLUMNS)
@@ -502,6 +591,8 @@ def _failed_row(tx_id: str) -> dict:
         "transcript_id": tx_id,
         "resolved_orf_status": ResolvedORFStatus.RESOLUTION_FAILED.value,
         "resolved_stop_pos": None,
+        "resolved_start_pos": None,
+        "resolved_stop_codon_pos": None,
         "resolved_cds_bp": 0,
         "resolved_aa_length": 0,
         "resolved_cds_intervals": [],
@@ -511,4 +602,10 @@ def _failed_row(tx_id: str) -> dict:
         "stop_in_transcript": False,
         "uorf_count": 0,
         "uorf_triggers_nmd": False,
+        "orf_start_observed": False,
+        "orf_stop_observed": False,
+        "orf_censoring": "unknown",
+        "partial_cds_bp": 0,
+        "partial_cds_intervals": [],
+        "alternative_start_inferred": False,
     }

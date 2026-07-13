@@ -30,6 +30,8 @@ _RESOLVED_ORDER = [
     "ptc_intron_retained",
     "cds_extension",
     "start_rescued",
+    "left_censored",
+    "right_censored",
     "no_stop_in_read",
     "resolution_failed",
 ]
@@ -101,7 +103,9 @@ def _kpis(df: pd.DataFrame) -> str:
     n = len(df)
     tiles: list[tuple[str, str]] = [(f"{n:,}", "isoforms")]
     if "nmd_status" in df.columns:
-        tiles.append((_pct(int((df["nmd_status"] == "sensitive").sum()), n), "NMD-sensitive"))
+        tiles.append(
+            (_pct(int((df["nmd_status"] == "sensitive").sum()), n), "predicted NMD candidate")
+        )
     if "ptc_introduced" in df.columns:
         tiles.append((_pct(int(df["ptc_introduced"].sum()), n), "premature stop"))
     if "intron_retained_in_cds" in df.columns:
@@ -154,9 +158,15 @@ def _small_table_html(df: pd.DataFrame, columns: list[str]) -> str:
 
 
 def _top_nmd_sensitive(df: pd.DataFrame) -> tuple[str, int]:
-    if "nmd_status" not in df.columns or "nmd_confidence" not in df.columns:
+    if "nmd_susceptibility" in df.columns:
+        sub = df[df["nmd_susceptibility"] == "likely_sensitive"].copy()
+    elif "nmd_status" in df.columns:
+        # Render v1 tables without reviving the old biological claim.
+        sub = df[df["nmd_status"] == "sensitive"].copy()
+    else:
         return "", 0
-    sub = df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
+    if "isoform_evidence_tier" in sub.columns and sub["isoform_evidence_tier"].notna().any():
+        sub = sub[sub["isoform_evidence_tier"].isin({"strong", "supported"})]
     if sub.empty:
         return "", 0
     sort_col = "orf_confidence_score" if "orf_confidence_score" in sub.columns else None
@@ -211,8 +221,8 @@ def _notable_findings_html(df: pd.DataFrame) -> str:
     nmd_html, nmd_total = _top_nmd_sensitive(df)
     if nmd_html:
         sections.append(
-            f'<h3>Top NMD-sensitive isoforms <span class="count">({nmd_total} '
-            f'high-confidence)</span></h3>{nmd_html}'
+            f'<h3>Top predicted NMD candidates <span class="count">({nmd_total} '
+            f'structurally compatible)</span></h3>{nmd_html}'
         )
     ir_html, ir_total = _top_intron_retained(df)
     if ir_html:
@@ -233,7 +243,7 @@ def _notable_findings_html(df: pd.DataFrame) -> str:
 
 
 def _celltype_section_html(celltype: pd.DataFrame | None) -> str:
-    """Per-cell-type AS-NMD panel: recurrent NMD-sensitive isoforms by cell group."""
+    """Per-cell-type AS-NMD panel: supported predicted candidates by group."""
     if celltype is None or celltype.empty:
         return ""
     n_groups = celltype["cell_group"].nunique()
@@ -246,7 +256,7 @@ def _celltype_section_html(celltype: pd.DataFrame | None) -> str:
     table = _small_table_html(top, cols)
     return (
         '<h2>Cell-type AS-NMD map</h2>'
-        f'<p class="meta">Recurrent, NMD-sensitive isoforms by cell group '
+        f'<p class="meta">Supported, structurally predicted NMD candidates by cell group '
         f'({n_iso} isoforms across {n_groups} groups; top rows shown, full table in '
         f'per_celltype_as_nmd.tsv).</p>{table}'
     )
@@ -278,7 +288,11 @@ def render(
             "Resolved ORF status",
             _RESOLVED_ORDER,
         ),
-        category_bar(_value_counts(per_isoform, "nmd_status"), "NMD status", _NMD_ORDER),
+        category_bar(
+            _value_counts(per_isoform, "nmd_status"),
+            "Predicted NMD susceptibility (legacy labels)",
+            _NMD_ORDER,
+        ),
     ]
     cp = per_isoform.get("coding_potential_score")
     if cp is not None and pd.to_numeric(cp, errors="coerce").notna().any():

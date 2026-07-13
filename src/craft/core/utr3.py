@@ -13,6 +13,12 @@ import pandas as pd
 import pyranges as pr
 import pysam
 
+from craft.core.intervals import (
+    genomic_position_at_transcript_coordinate,
+    spliced_length,
+    transcript_coordinate,
+)
+
 POLYA_SIGNALS: tuple[str, ...] = (
     "AATAAA",
     "ATTAAA",
@@ -65,29 +71,43 @@ def polya_signal(sequence: str) -> dict[str, int | str]:
     return {"motif": "", "distance_from_3p_end": -1}
 
 
-def _utr3_length(exons: pd.DataFrame, stop_pos: int, strand: str) -> int:
-    """Total mRNA bp downstream of the stop codon (in transcript order)."""
-    starts = exons["Start"].to_numpy()
-    ends = exons["End"].to_numpy()
-    if strand == "+":
-        contrib = np.maximum(0, ends - np.maximum(starts, stop_pos + 1))
-    elif strand == "-":
-        contrib = np.maximum(0, np.minimum(ends, stop_pos) - starts)
-    else:
-        raise ValueError(f"Unsupported strand: {strand!r}")
-    return int(contrib.sum())
+def _utr3_length(exons: pd.DataFrame, stop_codon_pos: int, strand: str) -> int:
+    """Total mRNA bp after the complete three-base stop codon."""
+    stop_tx = transcript_coordinate(exons, stop_codon_pos, strand)
+    if stop_tx is None:
+        return 0
+    return max(spliced_length(exons) - (stop_tx + 3), 0)
 
 
-def _parent_stop_pos(cds_df: pd.DataFrame, strand: str) -> int:
-    if strand == "+":
-        return int(cds_df["End"].max()) - 1
-    if strand == "-":
-        return int(cds_df["Start"].min())
-    raise ValueError(f"Unsupported strand: {strand!r}")
+def _parent_stop_codon_pos(parent_df: pd.DataFrame, strand: str) -> int:
+    stop = parent_df[parent_df["Feature"] == "stop_codon"]
+    if not stop.empty:
+        if strand == "+":
+            return int(stop["Start"].min())
+        return int(stop["End"].max()) - 1
+    cds_df = parent_df[parent_df["Feature"] == "CDS"]
+    exons = parent_df[parent_df["Feature"] == "exon"]
+    last_sense = (
+        int(cds_df["End"].max()) - 1 if strand == "+" else int(cds_df["Start"].min())
+    )
+    last_sense_tx = transcript_coordinate(exons, last_sense, strand)
+    stop_pos = (
+        genomic_position_at_transcript_coordinate(exons, last_sense_tx + 1, strand)
+        if last_sense_tx is not None else None
+    )
+    if stop_pos is None:
+        raise ValueError("Could not place the parent stop codon on its exon chain")
+    return stop_pos
 
 
-def _start_pos(cds_df: pd.DataFrame, strand: str) -> int:
+def _start_pos(parent_df: pd.DataFrame, strand: str) -> int:
     """Genomic 0-based position of the start codon's first base."""
+    starts = parent_df[parent_df["Feature"] == "start_codon"]
+    if not starts.empty:
+        if strand == "+":
+            return int(starts["Start"].min())
+        return int(starts["End"].max()) - 1
+    cds_df = parent_df[parent_df["Feature"] == "CDS"]
     if strand == "+":
         return int(cds_df["Start"].min())
     if strand == "-":
@@ -108,12 +128,23 @@ def _utr5_length(exons: pd.DataFrame, start_pos: int, strand: str) -> int:
     return int(contrib.sum())
 
 
-def _iso_stop_pos(intervals: list[tuple], strand: str) -> int:
-    if strand == "+":
-        return max(end - 1 for _, _, end, _ in intervals)
-    if strand == "-":
-        return min(start for _, start, _, _ in intervals)
-    raise ValueError(f"Unsupported strand: {strand!r}")
+def _stop_codon_from_cds_intervals(
+    intervals: list[tuple], exons: pd.DataFrame, strand: str
+) -> int:
+    """Infer stop-codon first base from CDS intervals that exclude the stop."""
+    last_sense = (
+        max(int(end) for _, _, end, _ in intervals) - 1
+        if strand == "+"
+        else min(int(start) for _, start, _, _ in intervals)
+    )
+    last_sense_tx = transcript_coordinate(exons, last_sense, strand)
+    stop_pos = (
+        genomic_position_at_transcript_coordinate(exons, last_sense_tx + 1, strand)
+        if last_sense_tx is not None else None
+    )
+    if stop_pos is None:
+        raise ValueError("Could not place the inferred stop codon on the exon chain")
+    return stop_pos
 
 
 def polya_near_3prime_end(
@@ -180,29 +211,21 @@ def polya_near_3prime_end(
 
 def _extract_utr3_sequence(
     exons: pd.DataFrame,
-    stop_pos: int,
+    stop_codon_pos: int,
     strand: str,
     genome: pysam.FastaFile,
 ) -> str:
     """Extract the 3' UTR sequence in transcript orientation (5' to 3')."""
     chrom = str(exons["Chromosome"].iloc[0])
-    sorted_exons = exons.sort_values("Start").reset_index(drop=True)
-    parts: list[str] = []
-    for _, ex in sorted_exons.iterrows():
-        ex_start = int(ex["Start"])
-        ex_end = int(ex["End"])
-        if strand == "+":
-            utr_start = max(ex_start, stop_pos + 1)
-            utr_end = ex_end
-        else:
-            utr_start = ex_start
-            utr_end = min(ex_end, stop_pos)
-        if utr_end > utr_start:
-            parts.append(genome.fetch(chrom, utr_start, utr_end))
-    sequence = "".join(parts).upper()
+    sorted_exons = exons.sort_values("Start", kind="stable")
+    sequence = "".join(
+        genome.fetch(chrom, int(exon.Start), int(exon.End))
+        for exon in sorted_exons.itertuples(index=False)
+    ).upper()
     if strand == "-":
         sequence = _reverse_complement(sequence)
-    return sequence
+    stop_tx = transcript_coordinate(exons, stop_codon_pos, strand)
+    return sequence[stop_tx + 3 :] if stop_tx is not None else ""
 
 
 _COLUMNS = [
@@ -265,9 +288,7 @@ def annotate(
     parent_exons_by_tx = {
         tx: g for tx, g in ref_df[ref_df["Feature"] == "exon"].groupby("transcript_id", sort=False)
     }
-    parent_cds_by_tx = {
-        tx: g for tx, g in ref_df[ref_df["Feature"] == "CDS"].groupby("transcript_id", sort=False)
-    }
+    parent_records_by_tx = {tx: g for tx, g in ref_df.groupby("transcript_id", sort=False)}
 
     genome = pysam.FastaFile(str(genome_fasta)) if genome_fasta is not None else None
     try:
@@ -276,7 +297,7 @@ def annotate(
             res_row = resolved_by_tx.get(tx_id)
             strand = str(iso_strand.get(tx_id, "+"))
             parent_tx = iso_parent.get(tx_id, "")
-            parent_cds = parent_cds_by_tx.get(parent_tx)
+            parent_records = parent_records_by_tx.get(parent_tx)
             parent_exons = parent_exons_by_tx.get(parent_tx)
             status = (
                 str(res_row["resolved_orf_status"]) if res_row is not None else "resolution_failed"
@@ -294,12 +315,18 @@ def annotate(
                 and res_row["resolved_cds_intervals"]
             )
             if has_stop and iso_exons is not None:
-                iso_stop = _iso_stop_pos(res_row["resolved_cds_intervals"], strand)
+                iso_stop = (
+                    int(res_row["resolved_stop_codon_pos"])
+                    if pd.notna(res_row.get("resolved_stop_codon_pos"))
+                    else _stop_codon_from_cds_intervals(
+                        res_row["resolved_cds_intervals"], iso_exons, strand
+                    )
+                )
                 iso_utr3 = _utr3_length(iso_exons, iso_stop, strand)
                 row["iso_utr3_length_nt"] = iso_utr3
                 row["long_utr3_triggers_nmd"] = iso_utr3 > long_utr3_nt
-                if parent_cds is not None and parent_exons is not None:
-                    parent_stop = _parent_stop_pos(parent_cds, strand)
+                if parent_records is not None and parent_exons is not None:
+                    parent_stop = _parent_stop_codon_pos(parent_records, strand)
                     parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
                     row["parent_utr3_length_nt"] = parent_utr3
                     row["utr3_length_delta_nt"] = iso_utr3 - parent_utr3
@@ -316,8 +343,16 @@ def annotate(
                         row["polya_signal_distance_nt"] = int(sig["distance_from_3p_end"])
 
             # 5'UTR: only when the start codon is observed (resolution succeeded).
-            if parent_cds is not None and iso_exons is not None and status != "resolution_failed":
-                start_pos = _start_pos(parent_cds, strand)
+            if (
+                parent_records is not None
+                and iso_exons is not None
+                and status not in {"resolution_failed", "left_censored"}
+            ):
+                start_pos = (
+                    int(res_row["resolved_start_pos"])
+                    if res_row is not None and pd.notna(res_row.get("resolved_start_pos"))
+                    else _start_pos(parent_records, strand)
+                )
                 iso_utr5 = _utr5_length(iso_exons, start_pos, strand)
                 row["iso_utr5_length_nt"] = iso_utr5
                 if parent_exons is not None:

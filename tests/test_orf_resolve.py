@@ -75,10 +75,17 @@ def _cds_for(exons: list[tuple[int, int]], strand: str, cstart: int, cend: int) 
     return _transcript_to_genomic_intervals(cstart, cend, ref_df, strand, "chr1")
 
 
-def _run(iso: pr.PyRanges, ref: pr.PyRanges, genome: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _run(
+    iso: pr.PyRanges,
+    ref: pr.PyRanges,
+    genome: Path,
+    allow_start_rescue: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     classified = classify(iso, _ref_exons_only(ref))
     propagated = propagate(classified, ref)
-    resolved = resolve(classified, propagated, ref, genome)
+    resolved = resolve(
+        classified, propagated, ref, genome, allow_start_rescue=allow_start_rescue
+    )
     return propagated, resolved
 
 
@@ -164,7 +171,9 @@ def test_no_stop_in_read_when_3prime_truncated(tmp_path: Path) -> None:
     assert _row(propagated, "t1")["orf_outcome"] == ORFOutcome.STOP_NOT_OBSERVED.value
     r = _row(resolved, "t1")
     assert not r["stop_in_transcript"]
-    assert r["resolved_orf_status"] == ResolvedORFStatus.NO_STOP_IN_READ.value
+    assert r["resolved_orf_status"] == ResolvedORFStatus.RIGHT_CENSORED.value
+    assert r["orf_censoring"] == "right"
+    assert r["partial_cds_bp"] > 0
     assert r["resolved_aa_length"] == 0
 
 
@@ -225,7 +234,7 @@ def test_start_lost_is_frame_rescued_to_first_inframe_atg(tmp_path: Path) -> Non
     # parent reading frame (frame_offset 1), so it is the rescued start.
     fills = [(120, "CATGGCTGCT"), (200, "GCTTAA" + "A" * 34)]
     genome = _write_genome(tmp_path, 240, fills)
-    propagated, resolved = _run(iso, ref, genome)
+    propagated, resolved = _run(iso, ref, genome, allow_start_rescue=True)
     assert _row(propagated, "t1")["orf_outcome"] == ORFOutcome.START_LOST.value
     r = _row(resolved, "t1")
     assert r["resolved_orf_status"] == ResolvedORFStatus.START_RESCUED.value
@@ -244,7 +253,9 @@ def test_start_lost_without_inframe_atg_stays_resolution_failed(tmp_path: Path) 
     genome = _write_genome(tmp_path, 240, fills)
     propagated, resolved = _run(iso, ref, genome)
     assert _row(propagated, "t1")["orf_outcome"] == ORFOutcome.START_LOST.value
-    assert _row(resolved, "t1")["resolved_orf_status"] == ResolvedORFStatus.RESOLUTION_FAILED.value
+    r = _row(resolved, "t1")
+    assert r["resolved_orf_status"] == ResolvedORFStatus.LEFT_CENSORED.value
+    assert r["orf_censoring"] == "left"
 
 
 def test_empty_inputs_return_empty_frame(tmp_path: Path) -> None:

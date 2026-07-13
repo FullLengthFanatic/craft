@@ -1,10 +1,8 @@
 """Per-isoform recurrence from a per-cell count matrix.
 
-``n_cells_detected`` and ``total_count`` are depth-stable filtering signals: an
-isoform observed in many independent cells is supported regardless of per-cell
-sequencing depth, unlike a raw read count, which scales with how deeply each cell was sequenced.
-``isoform_fraction_within_gene`` puts an isoform's abundance on a per-gene scale,
-which cancels the depth term as well.
+``n_cells_detected`` and ``total_count`` are descriptive support features.  They
+are not truth labels and are not depth invariant: both depend on capture,
+sequencing saturation, cell number and cell-type abundance.
 
 Restrict to called cells with an optional barcode whitelist. The count matrices
 that ship with pigeon / isoseq carry every observed barcode, most of which are
@@ -100,6 +98,14 @@ def compute_recurrence(
             "transcript_id": np.asarray(counts.var_names),
             "n_cells_detected": np.rint(n_cells).astype("int64"),
             "total_count": np.rint(total).astype("int64"),
+            "n_cells_total": int(counts.n_obs),
+            "detection_fraction": n_cells / max(int(counts.n_obs), 1),
+            "molecules_per_detected_cell": np.divide(
+                total,
+                n_cells,
+                out=np.full(total.shape, np.nan, dtype=float),
+                where=n_cells > 0,
+            ),
         }
     )
 
@@ -125,11 +131,15 @@ _CONFIDENCE_COLUMNS = ["transcript_id", "recurrence_pvalue", "recurrence_score"]
 def _occupancy_pvalue(counts: ad.AnnData) -> pd.Series:
     """Upper-tail p-value that an isoform occupies >= its observed cell count.
 
-    Null: the isoform's total molecules are scattered across cells in proportion
-    to each cell's library size (multinomial). The occupied-cell count is then
-    Poisson-binomial with per-cell occupancy probability ``1 - (1 - p_c)^T``; the
-    tail is taken from its normal approximation with a continuity correction. This
-    conditions on the isoform total ``T``, the cell count ``N`` and per-cell depth.
+    Null: independent Poisson molecule counts have mean ``T * p_c`` per cell,
+    where ``p_c`` is the cell's fraction of total library depth and ``T`` is the
+    observed isoform total. Occupancy indicators are then independent with
+    probability ``1 - exp(-T * p_c)``. The occupied-cell count is Poisson-binomial;
+    its upper tail uses a normal approximation with continuity correction.
+
+    This is a coherent Poissonized approximation to fixed-total multinomial
+    allocation. Treat the result as an exploratory dispersion statistic: it does
+    not model expression heterogeneity and is not an isoform-validity probability.
     Returns a Series indexed by ``var_names`` (NaN for isoforms with no molecules).
     """
     x = counts.X
@@ -151,16 +161,18 @@ def _occupancy_pvalue(counts: ad.AnnData) -> pd.Series:
         return pd.Series(np.nan, index=var_names)
 
     p = depth / depth_total
-    log1m = np.log1p(-np.clip(p, 0.0, 1.0 - 1e-12))  # log(1 - p_c)
     totals = np.rint(total).astype(np.int64)
 
-    # S1(m) = sum_c (1 - p_c)^m; we need it at m = T and m = 2T per isoform.
-    s1: dict[int, float] = {}
-    for m in np.unique(np.concatenate([totals, 2 * totals])):
-        s1[int(m)] = float(np.exp(int(m) * log1m).sum())
+    moments: dict[int, tuple[float, float]] = {}
+    for molecules in np.unique(totals):
+        occupied_probability = 1.0 - np.exp(-int(molecules) * p)
+        moments[int(molecules)] = (
+            float(occupied_probability.sum()),
+            float((occupied_probability * (1.0 - occupied_probability)).sum()),
+        )
 
-    mean = np.array([n_cells - s1[int(t)] for t in totals], dtype=float)
-    variance = np.array([s1[int(t)] - s1[int(2 * t)] for t in totals], dtype=float)
+    mean = np.array([moments[int(t)][0] for t in totals], dtype=float)
+    variance = np.array([moments[int(t)][1] for t in totals], dtype=float)
     variance = np.clip(variance, 1e-12, None)
     z = (occ - 0.5 - mean) / np.sqrt(variance)
     pval = norm.sf(z)
@@ -214,12 +226,12 @@ def recurrence_confidence(
     cell_whitelist: Iterable[str] | None = None,
     classes: pd.Series | None = None,
 ) -> pd.DataFrame:
-    """Calibrated recurrence: is an isoform detected in more cells than a null explains?
+    """Exploratory recurrence: is detection broader than a chosen null predicts?
 
-    Replaces a fixed ``n_cells_detected >= k`` cut with a dataset-calibrated score.
     Returns ``transcript_id``, ``recurrence_pvalue`` (upper-tail probability of the
     observed cell count under the null) and ``recurrence_score`` (``1 - pvalue``;
-    higher = more confidently recurrent). Both are NaN when ``method == "none"``
+    higher = broader detection relative to that null). Neither statistic is a
+    probability that an isoform is real. Both are NaN when ``method == "none"``
     (the default, which leaves the prior output unchanged) and for isoforms with no
     molecules.
 
@@ -227,7 +239,7 @@ def recurrence_confidence(
         counts: the per-cell count matrix (whitelist applied here if given, matching
             :func:`compute_recurrence`).
         recurrence: output of :func:`compute_recurrence` (defines isoform order).
-        method: ``occupancy`` (depth-aware Poisson-binomial null), ``betabinom``
+        method: ``occupancy`` (depth-aware Poissonized occupancy null), ``betabinom``
             (empirical beta-binomial on the cells-detected counts), or ``none``.
         classes: optional per-isoform structural class, aligned to ``recurrence``
             rows, used to stratify the ``betabinom`` fit.

@@ -74,9 +74,9 @@ def test_load_reference_keeps_exon_and_cds_rows(synthetic_gtf: Path) -> None:
     ref = load_reference(synthetic_gtf)
     df = ref.df
     features = set(df["Feature"].unique())
-    assert features == {"exon", "CDS"}
-    # 5 exons + 4 CDS = 9 rows
-    assert len(ref) == 9
+    assert features == {"exon", "CDS", "start_codon"}
+    # 5 exons + 4 CDS + explicit start codon = 10 rows
+    assert len(ref) == 10
 
 
 def test_load_reference_feature_column_preserved(synthetic_gtf: Path) -> None:

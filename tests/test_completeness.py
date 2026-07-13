@@ -267,3 +267,19 @@ def test_has_cds_bearing_parent_false_without_cds_set() -> None:
     result = classify(iso, ref)
     row = result.df[result.df["transcript_id"] == "t1"].iloc[0]
     assert not bool(row["has_cds_bearing_parent"])
+
+
+def test_equal_parents_are_reported_as_ambiguous() -> None:
+    ref = _exons(
+        [
+            ("chr1", 100, 200, "+", "a"),
+            ("chr1", 300, 400, "+", "a"),
+            ("chr1", 100, 200, "+", "b"),
+            ("chr1", 300, 400, "+", "b"),
+        ]
+    )
+    iso = _exons([("chr1", 100, 200, "+", "q"), ("chr1", 300, 400, "+", "q")])
+    row = classify(iso, ref).df.groupby("transcript_id").first().iloc[0]
+    assert row["parent_candidate_count"] == 2
+    assert bool(row["parent_ambiguous"])
+    assert row["parent_match_margin"] == 0

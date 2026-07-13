@@ -90,7 +90,7 @@ def test_render_kpis_and_distribution_categories(tmp_path: Path) -> None:
     output = tmp_path / "report.html"
     render(_example_df(), output)
     html = output.read_text()
-    assert "NMD-sensitive" in html  # KPI label
+    assert "predicted NMD candidate" in html  # KPI label
     assert "full_length" in html
     assert "resolution_failed" in html
 
@@ -99,7 +99,7 @@ def test_render_notable_nmd_and_intron_retained(tmp_path: Path) -> None:
     output = tmp_path / "report.html"
     render(_example_df(), output)
     html = output.read_text()
-    assert "Top NMD-sensitive isoforms" in html
+    assert "Top predicted NMD candidates" in html
     assert "Intron-retained-in-CDS isoforms" in html
     assert "t3" in html  # the IR isoform
 

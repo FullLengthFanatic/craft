@@ -15,6 +15,8 @@ import pysam
 
 from craft.core.coding_potential import score_isoforms as coding_potential_score
 from craft.core.completeness import Completeness, classify
+from craft.core.evidence import OUTPUT_COLUMNS as EVIDENCE_COLUMNS
+from craft.core.evidence import load_evidence
 from craft.core.nmd import predict as nmd_predict
 from craft.core.orf.confidence import ORFConfidence, score
 from craft.core.orf.denovo import predict as denovo_predict
@@ -28,18 +30,22 @@ from craft.core.recurrence import (
     recurrence_confidence,
     within_gene_fraction,
 )
+from craft.core.reference import transcript_metadata
 from craft.core.utr3 import annotate as utr3_annotate
 from craft.core.utr3 import polya_near_3prime_end
 from craft.export.anndata import to_anndata, write_h5ad
 from craft.export.celltype import aggregate_consequences, celltype_as_nmd
 from craft.io.counts import load_counts
 from craft.io.gtf import load_isoforms, load_reference
+from craft.io.orf_comparison import COLUMNS as ORF_COMPARISON_COLUMNS
+from craft.io.orf_comparison import compare_orf_gtf
 from craft.report.html import render as render_report
 
 _LIST_COLUMNS = (
     "propagated_cds_intervals",
     "denovo_cds_intervals",
     "resolved_cds_intervals",
+    "partial_cds_intervals",
     "iso_pfam_domains",
     "parent_pfam_domains",
     "pfam_preserved",
@@ -65,6 +71,22 @@ _OUTPUT_COLUMNS = [
     "shared_junctions",
     "parent_overlap_bp",
     "has_cds_bearing_parent",
+    "parent_candidate_count",
+    "parent_ambiguous",
+    "parent_match_score",
+    "parent_match_margin",
+    "parent_selection_reason",
+    "junction_precision",
+    "junction_recall",
+    "junction_f1",
+    "exact_intron_chain",
+    "iso_chain_contained",
+    "parent_reference_priority",
+    "reference_cds_complete",
+    "reference_has_explicit_start",
+    "reference_has_explicit_stop",
+    "reference_cds_phase_valid",
+    "reference_priority_reason",
     # ORF: geometric propagation
     "orf_outcome",
     "propagated_cds_bp",
@@ -75,6 +97,8 @@ _OUTPUT_COLUMNS = [
     # ORF: sequence resolution
     "resolved_orf_status",
     "resolved_stop_pos",
+    "resolved_start_pos",
+    "resolved_stop_codon_pos",
     "resolved_cds_bp",
     "resolved_aa_length",
     "resolved_cds_intervals",
@@ -84,6 +108,12 @@ _OUTPUT_COLUMNS = [
     "stop_in_transcript",
     "uorf_count",
     "uorf_triggers_nmd",
+    "orf_start_observed",
+    "orf_stop_observed",
+    "orf_censoring",
+    "partial_cds_bp",
+    "partial_cds_intervals",
+    "alternative_start_inferred",
     # ORF: de novo (orphans)
     "denovo_orf_found",
     "denovo_cds_bp",
@@ -102,6 +132,13 @@ _OUTPUT_COLUMNS = [
     "stop_to_last_junction_nt",
     "last_exon_length_nt",
     "ptc_exon_length_nt",
+    "nmd_susceptibility",
+    "nmd_rule_score",
+    "nmd_evidence_tier",
+    "surveillance_status",
+    "surveillance_mechanism",
+    "nonstop_decay_candidate",
+    "surveillance_limitations",
     "long_utr3_triggers_nmd",
     # UTRs
     "iso_utr3_length_nt",
@@ -127,17 +164,25 @@ _OUTPUT_COLUMNS = [
     "coding_potential_score",
     "coding_potential_label",
     "coding_potential_orf_source",
-    # Per-cell recurrence (depth-stable; populated only with --counts)
+    # Per-cell abundance and recurrence descriptors (populated only with --counts)
     "total_count",
     "n_cells_detected",
+    "n_cells_total",
+    "detection_fraction",
+    "molecules_per_detected_cell",
     "isoform_fraction_within_gene",
     "recurrence_pvalue",
     "recurrence_score",
+    # Independent molecule/read evidence (never interpreted as a probability)
+    *[column for column in EVIDENCE_COLUMNS if column != "transcript_id"],
+    *[column for column in ORF_COMPARISON_COLUMNS if column != "transcript_id"],
 ]
 
 _RESOLVE_COLUMNS = (
     "resolved_orf_status",
     "resolved_stop_pos",
+    "resolved_start_pos",
+    "resolved_stop_codon_pos",
     "resolved_cds_bp",
     "resolved_aa_length",
     "resolved_cds_intervals",
@@ -147,6 +192,12 @@ _RESOLVE_COLUMNS = (
     "stop_in_transcript",
     "uorf_count",
     "uorf_triggers_nmd",
+    "orf_start_observed",
+    "orf_stop_observed",
+    "orf_censoring",
+    "partial_cds_bp",
+    "partial_cds_intervals",
+    "alternative_start_inferred",
 )
 
 _DENOVO_TRIGGER_OUTCOMES = frozenset(
@@ -357,6 +408,8 @@ def _write_coding_model(model: dict, path: Path) -> None:
         "n_train_coding": int(model["n_coding"]),
         "n_train_noncoding": int(model["n_noncoding"]),
         "heldout_auc": None if np.isnan(model["heldout_auc"]) else float(model["heldout_auc"]),
+        "validation": model.get("validation", "internal"),
+        "score_semantics": "classifier_score_not_calibrated_probability",
     }
     with open(path, "w") as fh:
         json.dump(summary, fh, indent=2)
@@ -370,6 +423,7 @@ def _fill_resolved_defaults(df: pd.DataFrame) -> None:
         "nmd_rule": "",
         "nmd_confidence": "none",
         "nmd_basis": "none",
+        "orf_censoring": "unknown",
     }
     for col, default in str_defaults.items():
         if col in df.columns:
@@ -381,14 +435,21 @@ def _fill_resolved_defaults(df: pd.DataFrame) -> None:
         "stop_in_transcript",
         "uorf_triggers_nmd",
         "long_utr3_triggers_nmd",
+        "orf_start_observed",
+        "orf_stop_observed",
+        "alternative_start_inferred",
     ):
         if col in df.columns:
             df[col] = df[col].fillna(False).astype(bool)
-    for col in ("resolved_cds_bp", "resolved_aa_length", "uorf_count"):
+    for col in ("resolved_cds_bp", "resolved_aa_length", "uorf_count", "partial_cds_bp"):
         if col in df.columns:
             df[col] = df[col].fillna(0).astype("int64")
     if "resolved_cds_intervals" in df.columns:
         df["resolved_cds_intervals"] = df["resolved_cds_intervals"].apply(
+            lambda v: v if isinstance(v, list) else []
+        )
+    if "partial_cds_intervals" in df.columns:
+        df["partial_cds_intervals"] = df["partial_cds_intervals"].apply(
             lambda v: v if isinstance(v, list) else []
         )
 
@@ -418,6 +479,60 @@ def _load_classification(
             file=sys.stderr,
         )
     return df[["transcript_id", *found]], found
+
+
+def _classification_parent_hints(path: Path | None) -> tuple[dict[str, str], dict[str, str]]:
+    """Read optional parent/gene assignments emitted by SQANTI3 or Pigeon."""
+    if path is None:
+        return {}, {}
+    df = pd.read_csv(path, sep=None, engine="python", dtype=str)
+    id_col = next(
+        (c for c in ("isoform", "transcript_id", "pbid", "id") if c in df.columns),
+        df.columns[0],
+    )
+    parent_col = next(
+        (c for c in ("associated_transcript", "reference_transcript", "ref_transcript")
+         if c in df.columns),
+        None,
+    )
+    gene_col = next(
+        (c for c in ("associated_gene", "gene_id", "gene") if c in df.columns),
+        None,
+    )
+
+    def _clean(value) -> str:
+        if pd.isna(value):
+            return ""
+        # Pigeon may report comma-separated alternatives.  That is ambiguity,
+        # not a license to silently choose the first one; use a hint only when unique.
+        text = str(value).strip()
+        return text if text and "," not in text and ";" not in text else ""
+
+    parents = {
+        str(row[id_col]): _clean(row[parent_col])
+        for _, row in df.iterrows()
+        if parent_col is not None and _clean(row[parent_col])
+    }
+    genes = {
+        str(row[id_col]): _clean(row[gene_col])
+        for _, row in df.iterrows()
+        if gene_col is not None and _clean(row[gene_col])
+    }
+    return parents, genes
+
+
+def _apply_gene_hints(isoforms: pr.PyRanges, gene_hints: dict[str, str]) -> pr.PyRanges:
+    if not gene_hints or len(isoforms) == 0:
+        return isoforms
+    df = isoforms.df.copy()
+    hinted = df["transcript_id"].astype(str).map(gene_hints).fillna("")
+    if "gene_id" not in df.columns:
+        df["gene_id"] = hinted
+    else:
+        existing = df["gene_id"].fillna("").astype(str)
+        df["gene_id"] = existing.where(existing.ne(""), hinted)
+    df["Strand"] = df["Strand"].astype(str)
+    return pr.PyRanges(df)
 
 
 def _empty_denovo() -> pd.DataFrame:
@@ -457,6 +572,9 @@ def run_annotate(
     classification_columns: str = "structural_category",
     group_by: str | None = None,
     recurrence_null: str = "none",
+    infer_alternative_start: bool = False,
+    evidence_path: Path | None = None,
+    orf_comparator_gtf: Path | None = None,
 ) -> pd.DataFrame:
     """Run the full CRAFT annotation pipeline.
 
@@ -483,6 +601,9 @@ def run_annotate(
     if genome_path is not None and len(isoforms) > 0:
         isoforms = _filter_isoforms_by_genome_contigs(isoforms, genome_path)
     reference = load_reference(reference_path)
+    parent_hints, gene_hints = _classification_parent_hints(classification_path)
+    isoforms = _apply_gene_hints(isoforms, gene_hints)
+    reference_meta = transcript_metadata(reference)
 
     ref_df = reference.df
     cds_tx_ids = set(
@@ -494,6 +615,8 @@ def run_annotate(
         tolerance=tolerance,
         cds_tx_ids=cds_tx_ids,
         prefer_coding_parent=prefer_coding_parent,
+        reference_metadata=reference_meta,
+        parent_hints=parent_hints,
     )
     propagated = propagate(classified, reference)
 
@@ -520,7 +643,12 @@ def run_annotate(
     # Sequence-level ORF resolution: the basis for the NMD and UTR calls.
     if genome_path is not None:
         resolve_df = resolve_orf(
-            classified, propagated, reference, genome_path, ptc_threshold_nt=ptc_threshold_nt
+            classified,
+            propagated,
+            reference,
+            genome_path,
+            ptc_threshold_nt=ptc_threshold_nt,
+            allow_start_rescue=infer_alternative_start,
         )
     else:
         resolve_df = pd.DataFrame(columns=["transcript_id", *_RESOLVE_COLUMNS])
@@ -579,9 +707,14 @@ def run_annotate(
     merged = pd.concat([merged, confidence], axis=1)
 
     # Add classify-derived columns from per-exon rows
-    classify_meta = classified.df.groupby("transcript_id").first().reset_index()[
-        ["transcript_id", "shared_junctions", "parent_overlap_bp", "has_cds_bearing_parent"]
+    classify_columns = [
+        "transcript_id", "shared_junctions", "parent_overlap_bp", "has_cds_bearing_parent",
+        "parent_candidate_count", "parent_ambiguous", "parent_match_score",
+        "parent_match_margin", "parent_selection_reason", "junction_precision",
+        "junction_recall", "junction_f1", "exact_intron_chain", "iso_chain_contained",
+        "parent_reference_priority",
     ]
+    classify_meta = classified.df.groupby("transcript_id").first().reset_index()[classify_columns]
     merged = merged.merge(classify_meta, on="transcript_id", how="left")
     merged["has_cds_bearing_parent"] = merged["has_cds_bearing_parent"].fillna(False).astype(bool)
 
@@ -607,6 +740,19 @@ def run_annotate(
         )
     merged["parent_gene_id"] = merged["parent_tx_id"].map(gene_id_map).fillna("")
     merged["parent_gene_name"] = merged["parent_tx_id"].map(gene_name_map).fillna("")
+    ref_meta_for_parent = reference_meta.rename(columns={"transcript_id": "parent_tx_id"})
+    keep_ref_meta = [
+        "parent_tx_id", "reference_cds_complete", "reference_has_explicit_start",
+        "reference_has_explicit_stop", "reference_cds_phase_valid",
+        "reference_priority_reason",
+    ]
+    merged = merged.merge(ref_meta_for_parent[keep_ref_meta], on="parent_tx_id", how="left")
+    for col in (
+        "reference_cds_complete", "reference_has_explicit_start",
+        "reference_has_explicit_stop", "reference_cds_phase_valid",
+    ):
+        merged[col] = merged[col].astype("boolean").fillna(False).astype(bool)
+    merged["reference_priority_reason"] = merged["reference_priority_reason"].fillna("")
 
     evidence_df = _polya_evidence_columns(polya_evidence)
     if not evidence_df.empty:
@@ -663,7 +809,7 @@ def run_annotate(
                 file=sys.stderr,
             )
 
-    # Per-cell recurrence: depth-stable filtering signals from the count matrix.
+    # Per-cell recurrence: descriptive support, not a depth-invariant truth label.
     counts_adata = load_counts(counts_path) if counts_path is not None else None
     whitelist = (
         load_cell_whitelist(cell_whitelist_path)
@@ -691,15 +837,42 @@ def run_annotate(
             merged = merged.merge(conf_df, on="transcript_id", how="left")
     elif recurrence_null != "none":
         print(
-            "[craft] --recurrence-null given but no --counts; recurrence calibration skipped.",
+            "[craft] --recurrence-null given but no --counts; recurrence comparison skipped.",
             file=sys.stderr,
         )
-    for col in ("total_count", "n_cells_detected", "recurrence_pvalue", "recurrence_score"):
+    for col in (
+        "total_count", "n_cells_detected", "n_cells_total", "detection_fraction",
+        "molecules_per_detected_cell", "recurrence_pvalue", "recurrence_score",
+    ):
         if col not in merged.columns:
             merged[col] = np.nan
     merged["isoform_fraction_within_gene"] = within_gene_fraction(
         merged["total_count"], merged["parent_gene_id"]
     )
+
+    if evidence_path is not None:
+        evidence = load_evidence(evidence_path)
+        merged = merged.merge(evidence, on="transcript_id", how="left")
+    for column in EVIDENCE_COLUMNS:
+        if column == "transcript_id":
+            continue
+        if column not in merged.columns:
+            merged[column] = np.nan
+    if evidence_path is not None:
+        missing_evidence = merged["isoform_evidence_tier"].isna()
+        merged.loc[missing_evidence, "isoform_evidence_tier"] = "insufficient_evidence"
+        merged.loc[missing_evidence, "evidence_feature_count"] = 0
+        merged.loc[missing_evidence, "evidence_model"] = "transparent_uncalibrated_v1"
+        merged.loc[missing_evidence, "evidence_warnings"] = '["no_matching_evidence_record"]'
+
+    if orf_comparator_gtf is not None:
+        comparison = compare_orf_gtf(merged, orf_comparator_gtf)
+        merged = merged.merge(comparison, on="transcript_id", how="left")
+    for column in ORF_COMPARISON_COLUMNS:
+        if column == "transcript_id":
+            continue
+        if column not in merged.columns:
+            merged[column] = np.nan
 
     merged = merged.reindex(columns=_OUTPUT_COLUMNS + carried)
 
