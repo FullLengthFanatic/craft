@@ -102,7 +102,7 @@ def test_isoform_in_counts_not_in_per_isoform_counts_in_total() -> None:
 
 
 def test_as_nmd_lists_recurrent_sensitive_isoforms_by_group(tmp_path) -> None:
-    # iso1 is the only NMD-sensitive isoform; it lives in group A (20 mol) not B.
+    # iso1 is the only predicted NMD candidate; it lives in group A (20 mol) not B.
     out = celltype_as_nmd(_adata(_COUNTS), _per_isoform(), "cell_type", tmp_path / "as_nmd.tsv")
     assert set(out["cell_group"]) == {"A"}
     row = out.iloc[0]
@@ -112,14 +112,14 @@ def test_as_nmd_lists_recurrent_sensitive_isoforms_by_group(tmp_path) -> None:
     assert (tmp_path / "as_nmd.tsv").exists()
 
 
-def test_as_nmd_recurrence_score_gates_membership() -> None:
+def test_as_nmd_independent_evidence_gates_membership() -> None:
     per = _per_isoform()
-    per["recurrence_score"] = [0.99, 0.99, 0.99]  # iso1 sensitive + recurrent -> kept
-    kept = celltype_as_nmd(_adata(_COUNTS), per, "cell_type", recurrence_score_min=0.95)
+    per["isoform_evidence_tier"] = ["strong", "strong", "strong"]
+    kept = celltype_as_nmd(_adata(_COUNTS), per, "cell_type")
     assert "iso1" in set(kept["transcript_id"])
 
-    per["recurrence_score"] = [0.5, 0.99, 0.99]  # iso1 now below threshold -> dropped
-    dropped = celltype_as_nmd(_adata(_COUNTS), per, "cell_type", recurrence_score_min=0.95)
+    per["isoform_evidence_tier"] = ["artifact_likely", "strong", "strong"]
+    dropped = celltype_as_nmd(_adata(_COUNTS), per, "cell_type")
     assert dropped.empty
 
 

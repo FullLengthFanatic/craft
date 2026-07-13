@@ -4,6 +4,48 @@ import pandas as pd
 import pyranges as pr
 
 
+def transcript_coordinate(exons: pd.DataFrame, genomic_pos: int, strand: str) -> int | None:
+    """Map a genomic base to a 0-based coordinate in spliced transcript order."""
+    if strand not in {"+", "-"}:
+        raise ValueError(f"Unsupported strand: {strand!r}")
+    ordered = exons.sort_values("Start", ascending=strand == "+", kind="stable")
+    offset = 0
+    for exon in ordered.itertuples(index=False):
+        start = int(exon.Start)
+        end = int(exon.End)
+        if start <= genomic_pos < end:
+            within = genomic_pos - start if strand == "+" else end - 1 - genomic_pos
+            return offset + within
+        offset += end - start
+    return None
+
+
+def genomic_position_at_transcript_coordinate(
+    exons: pd.DataFrame, coordinate: int, strand: str
+) -> int | None:
+    """Map one 0-based spliced-transcript coordinate back to the genome."""
+    if coordinate < 0:
+        return None
+    if strand not in {"+", "-"}:
+        raise ValueError(f"Unsupported strand: {strand!r}")
+    ordered = exons.sort_values("Start", ascending=strand == "+", kind="stable")
+    offset = 0
+    for exon in ordered.itertuples(index=False):
+        start = int(exon.Start)
+        end = int(exon.End)
+        length = end - start
+        if coordinate < offset + length:
+            within = coordinate - offset
+            return start + within if strand == "+" else end - 1 - within
+        offset += length
+    return None
+
+
+def spliced_length(exons: pd.DataFrame) -> int:
+    """Total exonic length of one transcript."""
+    return int((exons["End"] - exons["Start"]).sum())
+
+
 def splice_junctions(exons: pr.PyRanges) -> pr.PyRanges:
     """Compute splice junctions from exon intervals grouped by transcript.
 

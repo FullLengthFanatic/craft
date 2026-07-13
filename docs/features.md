@@ -1,362 +1,155 @@
-# CRAFT feature & column reference
+# CRAFT v2 output reference
 
-This is the single place that documents every output column CRAFT produces and
-how each is computed. For the algorithmic rationale, threshold justifications, and
-where each rule lives in the code, see [`craft_explained.md`](craft_explained.md).
-For operational recipes, see [`user_guide.md`](user_guide.md).
+`per_isoform.tsv` and `per_isoform.json` contain the same 124-field v2 schema.
+TSV list fields are JSON encoded. Optional analyses leave their fields empty; they
+do not remove columns. Additional classification passthrough columns may be appended.
 
-## The one thing to understand first: how the ORF is determined
+Coordinates follow the internal 0-based, half-open interval convention. Exact
+single-base genomic positions are 0-based. Never infer semantic meaning from column
+position; select by name.
 
-CRAFT classifies each isoform's ORF in two complementary steps, both written to
-every row.
+## Structure and parent assignment
 
-**Geometric propagation.** The parent transcript's CDS coordinates are projected
-onto the isoform by interval intersection. Fast, and it gives the structural
-outcome (`orf_outcome`: propagated_intact / disrupted / start_lost / ... ) plus
-the projected CDS (`propagated_cds_*`). It never reads the spliced sequence.
-
-**Sequence resolution.** CRAFT reconstructs the isoform's own spliced CDS from
-the genome and translates it codon by codon from the parent's start to the first
-in-frame stop. This finds the *real* stop, catching frameshifts from alternative
-splice sites, premature stops from exon skips, and introns retained inside the
-CDS (`resolved_orf_status`, `resolved_*`, `ptc_introduced`, `intron_retained_in_cds`).
-
-Everything downstream is computed once, from the resolved ORF, so there is a
-**single** NMD call and a single set of UTR columns (no geometric/resolved
-duplication). For orphan isoforms with no reference ORF, the NMD call falls back
-to the de-novo ORF; `nmd_basis` records which ORF was used (`resolved` /
-`denovo` / `none`).
-
-## Output files
-
-| File | When | Contents |
-| --- | --- | --- |
-| `per_isoform.tsv` | always | One row per isoform, 66 columns. List-valued columns are JSON-encoded. |
-| `per_isoform.json` | always | Same content as records; list columns stay as lists. |
-| `report.html` | always | Self-contained interactive summary. |
-| `annotated.h5ad` | always | AnnData: annotations in `var`, per-cell counts in `X` (if `--counts`). |
-| `per_celltype_consequence.tsv` | with `--counts` + `--group-by` | Expression-weighted consequence fractions per cell group. |
-| `coding_potential_model.json` | unless `--no-coding-potential` | Fitted coding-potential model: feature weights, training counts, 5-fold cross-validated AUC. |
-
-Every `per_isoform` column is listed below, grouped by feature.
-
-## Structural completeness
-
-The isoform's shape relative to its best-matching reference parent. The parent
-is the reference transcript with the most exactly shared splice junctions, ties
-broken by exon-overlap bp.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `transcript_id` | str | Isoform ID from the input GTF. |
-| `completeness` | categorical | `full_length`, `truncated_5p`, `truncated_3p`, `truncated_both`, `internal_fragment`, `alt_3prime_end`, or `novel_no_match`. `alt_3prime_end` is assigned when a `truncated_3p` isoform's 3' end has poly(A) support. |
-| `parent_tx_id` | str | Selected reference parent transcript; empty for `novel_no_match`. |
-| `parent_gene_id` | str | Parent gene ID (from the reference). |
-| `parent_gene_name` | str | Parent gene name (from the reference). |
-| `shared_junctions` | int | Count of splice junctions shared exactly with the parent. |
-| `parent_overlap_bp` | int | Total stranded exon-overlap bp with the parent. |
-| `has_cds_bearing_parent` | bool | Whether the selected parent has CDS records. Informational; with `--prefer-coding-parent` it also breaks parent-selection ties toward coding transcripts. |
-
-## ORF: geometric propagation
-
-Parent CDS coordinates projected onto the isoform by intersection.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `orf_outcome` | categorical | `propagated_intact`, `disrupted`, `start_lost`, `stop_not_observed`, `stop_at_alt_polya`, `no_parent`, `no_parent_cds`. |
-| `propagated_cds_bp` | int | Parent CDS bp preserved in the isoform. |
-| `parent_cds_bp` | int | Total parent CDS bp. |
-| `start_codon_covered` | bool | Parent start-codon genomic position observed in the isoform. |
-| `stop_codon_covered` | bool | Parent stop-codon genomic position observed in the isoform. |
-| `propagated_cds_intervals` | list | Genomic `[chrom, start, end, strand]` of the projected CDS. |
-
-## ORF: sequence resolution (v1.5)
-
-Reconstructed from the isoform's own spliced sequence. Computed for every
-isoform whose parent start codon is observed, plus a frame-aware rescue for
-`start_lost` isoforms (`no_parent` / `no_parent_cds` have nothing to anchor to).
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `resolved_orf_status` | categorical | `intact` (resolved stop matches the parent stop), `ptc_premature` (a premature stop from a frameshift or exon skip), `ptc_intron_retained` (premature stop and a retained CDS intron), `cds_extension` (read-through past the parent stop, a stop-loss), `start_rescued` (5' truncation lost the annotated start; the ORF was rescued from the first in-frame ATG in the parent frame), `no_stop_in_read` (translation runs off the 3' end), `resolution_failed` (no usable anchor). |
-| `resolved_stop_pos` | int / null | Genomic position of the last coding base of the resolved CDS; null when no in-frame stop was found or resolution failed. |
-| `resolved_cds_bp` | int | Resolved CDS length in bp (0 when no stop found). |
-| `resolved_aa_length` | int | Resolved protein length in amino acids. |
-| `resolved_cds_intervals` | list | Genomic intervals of the resolved CDS (JSON-encoded in TSV). |
-| `ptc_introduced` | bool | The resolved stop is upstream of the parent stop (a premature termination codon). |
-| `intron_retained_in_cds` | bool | A parent intron inside the CDS span is carried as exonic sequence by the isoform. Detected by engulfment, so it is not confused with an exon skip. |
-| `frame_consistent` | bool | The resolved stop coincides with the parent stop and no intron is retained. |
-| `stop_in_transcript` | bool | An in-frame stop was found before the transcript end. |
-
-## ORF: de novo prediction
-
-Used for isoforms with no usable parent (`no_parent`, `no_parent_cds`) and for
-`start_lost` isoforms where the frame-aware rescue found no in-frame ATG. Longest
-ATG-initiated ORF from orfipy on the spliced sequence.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `denovo_orf_found` | bool | A de novo ORF above the minimum length was found. |
-| `denovo_cds_bp` | int | De novo CDS length in bp. |
-| `denovo_orf_aa_length` | int | De novo protein length in amino acids. |
-| `denovo_start_codon` | str | Start codon reported by orfipy. |
-| `denovo_stop_codon` | str | Stop codon reported by orfipy. |
-| `denovo_cds_intervals` | list | Genomic intervals of the de novo ORF. |
-
-## ORF confidence
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `orf_confidence` | categorical | `high`, `medium`, `low`, or `none`. Combines the propagation outcome and the completeness penalty. |
-| `orf_confidence_score` | float | Numeric score in [0, 1] behind the category. Thresholds: `--orf-high-confidence` (0.85), `--orf-medium-confidence` (0.5). |
-
-## NMD
-
-A single NMD call per isoform, from the resolved ORF stop (de-novo fallback for
-orphans). The escape-rule cascade: stop in the last exon, within 50 nt of the
-last junction, start-proximal (short CDS), long last exon, else NMD-sensitive.
-
-### Interpreting the NMD columns
-
-Every NMD call answers one question: *will nonsense-mediated decay degrade this
-transcript?* NMD targets mRNAs whose stop codon looks premature, the classic
-trigger being a stop more than ~50 nt upstream of the last exon-exon junction
-(an exon-junction complex remains downstream of the stop and recruits the decay
-machinery). The status takes three values:
-
-- **`sensitive`** = predicted NMD substrate: the stop is >50 nt upstream of the
-  last junction and no escape rule fires, so the transcript is predicted to be
-  degraded. Read it as "likely unproductive, little-to-no protein" — typically a
-  frameshift, exon skip, retained intron, or a regulated AS-NMD isoform.
-- **`escaped`** = has a stop but predicted to evade NMD, because one escape rule
-  holds: stop in the last exon (the normal case), within ~50 nt of the last
-  junction, a very short CDS (re-initiation), or a very long last exon. **Escaped
-  does not mean full-length or normal** — a 5'-truncated isoform whose stop lands
-  in the last exon is "escaped" too. It only means "not an NMD target."
-- **`not_applicable`** = NMD could not be evaluated: no usable ORF (no parent CDS
-  and no de-novo ORF, the start codon is not observed, or no in-frame stop was
-  found in the read). **It is the absence of a call, not "safe."**
-
-`nmd_basis` tells you which ORF the call came from: `resolved` (the reference-
-anchored ORF, higher confidence), `denovo` (orphan isoforms with only a predicted
-ORF, always `low` confidence), or `none` (not applicable).
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `nmd_status` | categorical | `sensitive`, `escaped`, or `not_applicable`. |
-| `nmd_rule` | str | Which escape rule fired: `stop_in_last_exon`, `within_50nt_of_last_junction`, `start_proximal`, `long_exon` (or `ptc_50nt_rule` when sensitive). |
-| `nmd_confidence` | categorical | `high` (resolved intact ORF), `medium` (resolved but altered: PTC / IR / extension), `low` (de-novo ORF), `none` (not applicable). |
-| `nmd_basis` | str | `resolved` / `denovo` / `none` — which ORF the call used. |
-| `stop_to_last_junction_nt` | int / null | mRNA distance from the stop to the last exon-exon junction. |
-| `last_exon_length_nt` | int / null | Terminal exon length (descriptive). |
-| `ptc_exon_length_nt` | int / null | Length of the exon containing the resolved stop; drives the `long_exon` escape rule (Lindeboom et al. 2016). |
-| `long_utr3_triggers_nmd` | bool | Advisory: the resolved 3'UTR is longer than `--long-utr3-nt` (default 1000). |
-
-Advisory upstream-ORF flags (from the resolved engine, noisier by nature):
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `uorf_count` | int | Upstream ORFs fully contained in the 5'UTR (ATG to in-frame stop before the main start). |
-| `uorf_triggers_nmd` | bool | A uORF stop sits more than `--ptc-threshold-nt` upstream of the transcript's last junction (uORF-triggered NMD heuristic). |
-
-## 3'UTR and 5'UTR
-
-UTR lengths are measured from the resolved ORF (real start and stop).
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `iso_utr3_length_nt` | int / null | Isoform 3'UTR length (from the resolved stop). Null when no stop was resolved. |
-| `parent_utr3_length_nt` | int / null | Parent 3'UTR length. |
-| `utr3_length_delta_nt` | int / null | Isoform minus parent 3'UTR. |
-| `utr3_length_delta_pct` | float / null | Same delta as a percentage of the parent. |
-| `iso_utr5_length_nt` | int / null | Isoform 5'UTR length (upstream of the start codon). Null when the start is not observed. |
-| `parent_utr5_length_nt` | int / null | Parent 5'UTR length. |
-| `utr5_length_delta_nt` | int / null | Isoform minus parent 5'UTR. |
-| `utr5_length_delta_pct` | float / null | Same delta as a percentage of the parent. |
-
-## Poly(A)
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `polya_signal_motif` | str | Strongest canonical poly(A) signal in the isoform 3'UTR; empty if none. |
-| `polya_signal_distance_nt` | int / null | nt from the motif to the 3' end. |
-| `polya_evidence_source` | str | `polya_db` (atlas hit), `canonical_motif` (motif fallback), or `none`. |
-| `polya_db_site_id` | str | Atlas site ID when the source is `polya_db`. |
-
-## Pfam domains
-
-Populated only with `--pfam-hmm`. The isoform protein is taken from the
-resolved CDS when available (so frameshift- and intron-retention-truncated
-proteins are scored correctly), falling back to the propagated then de novo CDS.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `iso_pfam_domains` | list | Pfam domains found in the isoform protein. |
-| `parent_pfam_domains` | list | Pfam domains in the parent protein. |
-| `pfam_preserved` | list | Domains present in both. |
-| `pfam_lost` | list | Parent domains absent from the isoform. |
-| `pfam_gained` | list | Isoform domains absent from the parent. |
-
-## Coding potential
-
-A coding-potential score self-calibrated to the supplied reference. CRAFT trains
-a model from the reference's own transcripts (CDS-bearing as coding, CDS-less as
-non-coding): a hexamer coding/non-coding log-likelihood table plus a logistic
-regression on four features (hexamer log-likelihood ratio, log10 ORF length, ORF
-coverage, and the Fickett TESTCODE statistic). It then scores each isoform's best
-ORF (resolved, else propagated, else de novo). No model file is shipped and no
-external tool is required; the model fits whatever organism the reference
-describes. The fitted model and a 5-fold cross-validated AUC (about 0.86 on
-GENCODE v45) are written to `coding_potential_model.json`. Disable with
-`--no-coding-potential`; skipped automatically if the reference has no non-coding
-transcripts (columns left empty). This is a screening score; confirm borderline
-calls with CPC2 or CPAT.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `coding_potential_score` | float / null | Logistic probability the ORF is coding, in [0, 1]. Null when there is no ORF. |
-| `coding_potential_label` | categorical | `coding` if score ≥ 0.5, else `noncoding`. |
-| `coding_potential_orf_source` | str | Which ORF was scored: `resolved`, `propagated`, `denovo`, or `none`. |
-
-Use it to gate the orphan tail: a de-novo ORF with `coding_potential_label = coding`
-is a credible novel coding isoform (and its `nmd_status` / `nmd_basis=denovo` call is meaningful),
-while `noncoding` flags likely lncRNA or spurious ORFs.
-
-```python
-# credible novel coding isoforms among orphans:
-df[(df["coding_potential_orf_source"] == "denovo") & (df["coding_potential_label"] == "coding")]
-# lncRNA candidates: best overlap is non-coding and the ORF scores non-coding:
-df[(df["orf_outcome"] == "no_parent_cds") & (df["coding_potential_label"] == "noncoding")]
-```
-
-## Per-cell recurrence (v1.8)
-
-Populated only with `--counts` and `--cell-whitelist` (optional). These columns
-measure isoform support across cells in depth-stable fashion: raw molecule counts
-are sensitive to per-cell sequencing depth, while cell recurrence (the count of cells
-with at least one molecule) is orthogonal to depth. Filtering on these columns
-is more robust than thresholding total counts.
-
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `total_count` | int / null | Total UMI-corrected molecules for the isoform, summed across cells. Computed over called cells when `--cell-whitelist` is given; over every barcode (including ambient droplets) otherwise. Null when `--counts` is absent or the isoform is not in the count matrix. |
-| `n_cells_detected` | int / null | Number of cells with at least one molecule of the isoform, over the same cell set as `total_count`. A depth-stable recurrence signal: an isoform in many independent cells is supported regardless of per-cell sequencing depth. Null without `--counts`. |
-| `isoform_fraction_within_gene` | float / null | `total_count` divided by the summed `total_count` of all isoforms sharing the same `parent_gene_id`. A relative-abundance signal; the ratio cancels depth variation. Null for isoforms without a parent gene or without measured counts. |
-| `recurrence_pvalue` | float / null | Upper-tail probability of the observed `n_cells_detected` under `--recurrence-null` (`occupancy` or `betabinom`). Small = detected in more cells than the null explains. Null unless `--recurrence-null` is set (and NaN for isoforms with no molecules). |
-| `recurrence_score` | float / null | `1 - recurrence_pvalue`; higher = more confidently recurrent. A dataset-calibrated alternative to the fixed `n_cells_detected >= 3` cut. |
-
-**Recommended filtering:** `n_cells_detected >= 3` selects isoforms recurrent
-across at least three independent cells, robust to depth-dependent noise. For a
-depth- and dataset-calibrated cut instead of a fixed count, set `--recurrence-null`
-and filter on `recurrence_score` (e.g. `>= 0.95`).
-
-## External classification passthrough
-
-CRAFT does not do structural QC; it assumes the isoform GTF is already curated by
-SQANTI3/pigeon. To combine that upstream classification with CRAFT's consequence
-calls, pass the classification table with `--classification FILE`. CRAFT joins the
-columns named in `--classification-columns` (default `structural_category`) onto
-the per-isoform output by transcript id and appends them as new columns.
-
-The table is any TSV/CSV keyed by isoform id (`isoform`, `transcript_id`, `pbid`,
-or the first column; SQANTI3's `*_classification.txt` and pigeon both use
-`isoform`). Isoforms absent from the table get an empty value; a carried column
-whose name collides with a CRAFT column is prefixed `class_`. CRAFT logs the
-match rate to stderr.
-
-This is what makes the "novel splice boundary x functional consequence" analysis a
-one-liner: CRAFT supplies the consequence half (`resolved_orf_status`,
-`ptc_introduced`, `nmd_status`,
-`coding_potential_label`) and the passthrough supplies the SQANTI structural class.
-
-```python
-# NNC isoforms that are NMD substrates with a credible ORF:
-nnc = df[df["structural_category"] == "novel_not_in_catalog"]
-nnc[(nnc["nmd_status"] == "sensitive") & (nnc["coding_potential_label"] == "coding")]
-```
-
-## Per-cell-type consequence aggregation (v1.5)
-
-With `--counts` and `--group-by OBS_COLUMN`, CRAFT writes
-`per_celltype_consequence.tsv`: for each cell group, the molecule-weighted
-fraction of detected isoform molecules carrying each consequence. The fraction
-for a group `g` and class `c` is
-
-```
-sum of molecules in g over isoforms with class c   /   sum of all molecules in g
-```
-
-so a highly expressed isoform contributes in proportion to its read support.
-The same table is stored in `annotated.h5ad` under `uns['celltype_consequences']`.
-
-| Column | Meaning |
+| Field | Meaning |
 | --- | --- |
-| `cell_group` | A value of the `--group-by` obs column. |
-| `n_cells` | Cells in the group. |
-| `total_molecules` | Summed counts over all isoforms in the group (the denominator). |
-| `n_isoforms` | Isoforms with non-zero counts in the group. |
-| `frac_nmd_sensitive` | Fraction of molecules from NMD-sensitive isoforms. |
-| `frac_ptc_introduced` | Fraction from isoforms with a premature stop. |
-| `frac_intron_retained_in_cds` | Fraction from isoforms retaining a CDS intron. |
-| `frac_truncated_5p` / `frac_truncated_3p` / `frac_truncated_both` | Fraction from truncated isoforms. |
-| `frac_internal_fragment` | Fraction from internal fragments. |
-| `frac_alt_3prime_end` | Fraction from alternative-3'-end isoforms. |
-| `frac_domain_lost` | Fraction from isoforms with at least one lost Pfam domain. |
+| `transcript_id` | Input isoform identifier. |
+| `completeness` | End structure relative to the selected parent: `full_length`, `truncated_5p`, `truncated_3p`, `truncated_both`, `internal_fragment`, `novel_no_match`, or `alt_3prime_end`. |
+| `parent_tx_id`, `parent_gene_id`, `parent_gene_name` | Selected reference transcript and gene identifiers/name. |
+| `shared_junctions`, `parent_overlap_bp` | Exact shared splice junctions and stranded exon-overlap bases. |
+| `has_cds_bearing_parent` | Whether any plausible overlapping reference parent has CDS annotation. |
+| `parent_candidate_count` | Number of ranked reference candidates after gene-consistency restriction. |
+| `parent_ambiguous` | Best-versus-second score margin is too small for a unique call. |
+| `parent_match_score`, `parent_match_margin` | Composite ranking score and difference from runner-up. Scores rank candidates within an isoform; they are not probabilities. |
+| `parent_selection_reason` | Semicolon-delimited evidence used for the winner. |
+| `junction_precision`, `junction_recall`, `junction_f1` | Shared-junction agreement relative to isoform/reference chains. |
+| `exact_intron_chain`, `iso_chain_contained` | Exact chain equality or all isoform junctions contained in the parent. |
+| `parent_reference_priority`, `reference_priority_reason` | Curated tag-derived priority and human-readable reasons. |
+| `reference_cds_complete` | Reference has no incomplete-CDS tag and has adequate CDS boundary evidence. |
+| `reference_has_explicit_start`, `reference_has_explicit_stop` | Explicit GTF codon features are present. |
+| `reference_cds_phase_valid` | CDS phases are internally consistent. |
 
-Isoforms present in the counts but absent from the per-isoform table still count
-toward `total_molecules`; they never contribute to a numerator. A group with no
-counts yields `NaN` fractions.
+## Geometric CDS propagation
 
-## Command-line options
+| Field | Meaning |
+| --- | --- |
+| `orf_outcome` | Structural projection result such as `propagated_intact`, `disrupted`, `start_lost`, `stop_not_observed`, `no_parent`, or `no_parent_cds`. |
+| `propagated_cds_bp`, `parent_cds_bp` | Projected and reference CDS bases. |
+| `start_codon_covered`, `stop_codon_covered` | Reference boundaries occur on the observed isoform structure. |
+| `propagated_cds_intervals` | Projected genomic CDS intervals. |
 
-```
-craft annotate --isoforms ISO.gtf --reference REF.gtf --genome GENOME.fa --output-dir OUT/
-```
+## Sequence-resolved and censored ORF
 
-| Option | Default | Effect |
-| --- | --- | --- |
-| `--counts` | none | Per-cell counts (`.h5ad` or 10x MTX dir); populates `annotated.h5ad` and recurrence columns (`total_count`, `n_cells_detected`, `isoform_fraction_within_gene`). |
-| `--cell-whitelist` | none | Text file of called-cell barcodes (one per line). With `--counts`, recurrence metrics are computed over these cells only; otherwise over every barcode in the matrix (includes ambient droplets). Recommend deriving from the cell-calling knee. |
-| `--pfam-hmm` | none | Enables Pfam domain analysis. |
-| `--polya-atlas` | none | Curated poly(A) BED; drives the `alt_3prime_end` reclassification. |
-| `--group-by` | none | Obs column to aggregate consequences by; writes `per_celltype_consequence.tsv` (requires `--counts`). |
-| `--coding-potential` / `--no-coding-potential` | on | Score each ORF for coding potential against a reference-calibrated model. |
-| `--classification` | none | SQANTI3/pigeon (or any) classification TSV; selected columns are joined onto the output by transcript_id. |
-| `--classification-columns` | `structural_category` | Comma-separated columns to carry from `--classification`. |
-| `--tolerance` | 50 | End slack (bp) before calling a truncation. |
-| `--ptc-threshold-nt` | 50 | PTC rule distance to the last junction. |
-| `--start-proximal-nt` | 150 | CDS below this (bp) escapes NMD. |
-| `--long-last-exon-nt` | 400 | The exon containing the PTC above this (bp) escapes NMD (long-exon rule). |
-| `--min-orf-aa` | 50 | Minimum de novo ORF length. |
-| `--orf-high-confidence` | 0.85 | High ORF-confidence cutoff. |
-| `--orf-medium-confidence` | 0.5 | Medium ORF-confidence cutoff. |
-| `--long-utr3-nt` | 1000 | Long-3'UTR NMD flag threshold. |
-| `--prefer-coding-parent` | off | Break parent-selection ties toward CDS-bearing transcripts (off keeps results reproducible). |
-| `--recurrence-null` | none | Calibrate recurrence against a null (needs `--counts`): `occupancy` (depth-aware) or `betabinom`; emits `recurrence_pvalue` / `recurrence_score`. |
+| Field | Meaning |
+| --- | --- |
+| `resolved_orf_status` | `intact`, `ptc_premature`, `ptc_intron_retained`, `cds_extension`, `left_censored`, `right_censored`, opt-in `start_rescued`, legacy `no_stop_in_read`, or `resolution_failed`. |
+| `resolved_stop_pos` | Legacy genomic position of the last sense-CDS base. Prefer `resolved_stop_codon_pos` for termination geometry. |
+| `resolved_start_pos` | Exact genomic position of the supported/inferred start-codon anchor. |
+| `resolved_stop_codon_pos` | Exact genomic anchor for the first base of the complete stop codon in transcript direction. |
+| `resolved_cds_bp`, `resolved_aa_length`, `resolved_cds_intervals` | Complete resolved coding length, amino-acid length, and genomic intervals. |
+| `ptc_introduced` | Observed stop is premature relative to the parent. |
+| `intron_retained_in_cds` | A parent CDS intron is engulfed by an isoform exon. |
+| `frame_consistent` | Resolved sequence preserves the expected frame. |
+| `stop_in_transcript` | A complete in-frame stop codon was observed. |
+| `uorf_count`, `uorf_triggers_nmd` | Upstream ORF candidates and structural uORF-surveillance heuristic. |
+| `orf_start_observed`, `orf_stop_observed` | Whether the molecule contains the supported start/stop boundary. |
+| `orf_censoring` | `none`, `left`, `right`, or `both`. |
+| `partial_cds_bp`, `partial_cds_intervals` | Observed coding-frame segment when a complete ORF cannot be established. |
+| `alternative_start_inferred` | A downstream in-frame ATG was selected under explicit opt-in. |
 
-## Filter recipes
+## De novo ORF and confidence
 
-```python
-import pandas as pd
-df = pd.read_csv("out/per_isoform.tsv", sep="\t")
+| Field | Meaning |
+| --- | --- |
+| `denovo_orf_found` | A candidate meeting the configured minimum length was found. |
+| `denovo_cds_bp`, `denovo_orf_aa_length` | Candidate length in bases and amino acids. |
+| `denovo_start_codon`, `denovo_stop_codon` | Candidate codons. |
+| `denovo_cds_intervals` | Candidate genomic intervals. |
+| `orf_confidence`, `orf_confidence_score` | Rule-based confidence category and component score; neither is a calibrated correctness probability. |
 
-# Recurrent isoforms detected in multiple cells (with --counts)
-df[df["n_cells_detected"] >= 3]
+## RNA-surveillance prediction
 
-# High-confidence NMD substrates, using the sequence-resolved call
-df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
+| Field | Meaning |
+| --- | --- |
+| `nmd_status`, `nmd_rule`, `nmd_confidence`, `nmd_basis` | Legacy compatibility fields: structural `sensitive`/`escaped`/`not_applicable`, matched rule, confidence, and resolved/de novo basis. |
+| `stop_to_last_junction_nt` | Spliced bases after the complete stop codon to the last exon junction; zero in the last exon. |
+| `last_exon_length_nt`, `ptc_exon_length_nt` | Terminal-exon length and length of the stop-containing exon. |
+| `nmd_susceptibility` | `likely_sensitive`, `likely_escape`, or `indeterminate`. This is not observed decay. |
+| `nmd_rule_score` | Transparent rule severity on 0–1 scale, not a probability. |
+| `nmd_evidence_tier` | Strength of structural evidence: `strong`, `moderate`, `limited`, or `none`. |
+| `surveillance_status`, `surveillance_mechanism` | Generalized susceptibility status and mechanism (`nmd`, `nonstop_decay`, or `none`). |
+| `nonstop_decay_candidate` | Stopless/right-censored structure is compatible with non-stop decay. |
+| `surveillance_limitations` | Reason the rule result should be down-weighted or is indeterminate. |
+| `long_utr3_triggers_nmd` | Long-3'UTR heuristic relative to the configured threshold. |
 
-# NMD substrates called from a predicted (de-novo) ORF, i.e. the orphan tail
-df[(df["nmd_status"] == "sensitive") & (df["nmd_basis"] == "denovo")]
+## UTR and poly(A)
 
-# Premature stops introduced by retained CDS introns
-df[df["intron_retained_in_cds"]]
+| Field | Meaning |
+| --- | --- |
+| `iso_utr3_length_nt`, `parent_utr3_length_nt` | Isoform/reference 3' UTR length after the full three-base stop codon. |
+| `utr3_length_delta_nt`, `utr3_length_delta_pct` | Isoform minus parent 3' UTR difference. |
+| `iso_utr5_length_nt`, `parent_utr5_length_nt` | Isoform/reference sequence upstream of the supported start. Isoform is empty when start is censored. |
+| `utr5_length_delta_nt`, `utr5_length_delta_pct` | Isoform minus parent 5' UTR difference. |
+| `polya_signal_motif`, `polya_signal_distance_nt` | Best canonical motif and distance to the observed 3' end. |
+| `polya_evidence_source`, `polya_db_site_id` | Curated atlas, motif, or no evidence; matching atlas site ID. |
 
-# Domain loss driven by a real premature stop (needs --pfam-hmm)
-import json
-lost = df["pfam_lost"].apply(lambda s: len(json.loads(s)) > 0)
-df[lost & df["ptc_introduced"]]
+## Protein domains and coding potential
 
-# Alternative 3' ends with a longer UTR (potential APA with regulatory impact)
-df[(df["completeness"] == "alt_3prime_end") & (df["utr3_length_delta_nt"] > 0)]
-```
+| Field | Meaning |
+| --- | --- |
+| `iso_pfam_domains`, `parent_pfam_domains` | Domain calls for isoform and parent proteins. |
+| `pfam_preserved`, `pfam_lost`, `pfam_gained` | Domain-set comparison. Empty without `--pfam-hmm`. |
+| `coding_potential_score` | Reference-trained logistic classifier score; not probability-calibrated. |
+| `coding_potential_label` | Thresholded `coding`/`noncoding` screening label. |
+| `coding_potential_orf_source` | `resolved`, `propagated`, `denovo`, or `none`. |
+
+## Counts and recurrence
+
+| Field | Meaning |
+| --- | --- |
+| `total_count` | UMI-corrected molecules across included cells. |
+| `n_cells_detected`, `n_cells_total` | Cells with at least one molecule and all included cells. |
+| `detection_fraction` | `n_cells_detected / n_cells_total`. |
+| `molecules_per_detected_cell` | `total_count / n_cells_detected`. |
+| `isoform_fraction_within_gene` | Isoform count divided by counts for isoforms assigned to the same parent gene. |
+| `recurrence_pvalue`, `recurrence_score` | Optional null-model dispersion statistic and `1-p`. Exploratory; not transcript-realness probabilities. |
+
+## Independent molecule/read evidence
+
+Canonical evidence fractions are 0–1. The loader also accepts documented aliases and
+0–100 percentages.
+
+| Field | Meaning |
+| --- | --- |
+| `isoform_evidence_score` | Weighted mean of available favorable evidence and reversed artifact evidence. Uncalibrated. |
+| `isoform_evidence_tier` | `strong`, `supported`, `limited`, `artifact_likely`, or `insufficient_evidence`. |
+| `evidence_feature_count` | Number of measured components entering the score. |
+| `evidence_model` | Model/version identifier. |
+| `evidence_warnings` | JSON list, including insufficient features or strong artifact signal. |
+| `unique_molecule_fraction`, `ambiguous_molecule_fraction` | Uniquely/ambiguously assigned support among molecules or reads. |
+| `canonical_junction_fraction` | Fraction of relevant splice junctions with canonical motifs. |
+| `short_read_junction_support_fraction` | Fraction supported by orthogonal short reads. |
+| `full_length_fraction` | Molecules classified full length by the upstream assay. |
+| `five_prime_adapter_fraction` | 5' adapter/TSO or equivalent completion evidence. |
+| `polya_tail_fraction` | Molecules with direct poly(A)-tail evidence. |
+| `mapq_fraction` | Mapping-quality summary scaled by 60 and clipped to 0–1. |
+| `replicate_support_fraction` | Replicate/sample count scaled to saturation at two. |
+| `internal_priming_fraction` | Evidence of oligo(dT) internal priming. |
+| `template_switch_fraction` | Reverse-transcription template switching/strand invasion evidence. |
+| `chimera_fraction` | Chimeric molecule/alignment evidence. |
+
+## Independent ORF comparison
+
+| Field | Meaning |
+| --- | --- |
+| `comparator_orf_present` | Comparator GTF contains CDS for this transcript. |
+| `comparator_start_pos`, `comparator_stop_codon_pos`, `comparator_cds_bp` | Comparator start, stop anchor, and CDS length. |
+| `comparator_start_agrees`, `comparator_stop_agrees` | Exact positional agreement with CRAFT. |
+| `comparator_cds_bp_delta` | CRAFT resolved CDS bases minus comparator CDS bases. |
+
+## Interpretation rules
+
+- Empty optional fields mean missing evidence, not evidence of absence.
+- `parent_ambiguous` should lower confidence in every reference-propagated conclusion.
+- Censored ORFs must not be compared with complete ORFs as if their boundaries were observed.
+- Evidence tiers and scores require assay-specific calibration before hard filtering.
+- NMD fields report structural susceptibility; actual decay requires orthogonal validation.

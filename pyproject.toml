@@ -32,8 +32,11 @@ classifiers = [
 ]
 dependencies = [
     "pysam>=0.22",
-    "pyranges>=0.1",
-    "pandas>=2.0",
+    # PyRanges 0.1.4 converts +/- strands to '.' with pandas 3, which breaks
+    # every stranded join.  Keep the tested pair explicit until PyRanges ships
+    # a pandas-3-compatible release.
+    "pyranges==0.1.4",
+    "pandas>=2.0,<3",
     "numpy>=1.24",
     "scipy>=1.10",
     "click>=8.1",
@@ -41,8 +44,10 @@ dependencies = [
     "tqdm>=4.65",
     "pyhmmer>=0.10",
     "orfipy>=0.0.4",
-    "anndata>=0.10",
-    "mudata>=0.2",
+    # AnnData 0.13 requires pandas 3 while CRAFT currently requires pandas <3
+    # for PyRanges.  zarr<3 is the tested storage stack for AnnData 0.10-0.11.
+    "anndata>=0.10,<0.12",
+    "zarr>=2.16,<3",
 ]
 dynamic = ["version"]
 

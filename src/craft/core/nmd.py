@@ -1,9 +1,9 @@
-"""Nonsense-mediated decay (NMD) susceptibility prediction.
+"""Rule-based RNA-surveillance susceptibility annotation.
 
 NMD is predicted from the **sequence-resolved** ORF stop (the real in-frame stop
 found by translating the isoform's own spliced CDS). For orphan isoforms that
 have no reference-anchored ORF, the call falls back to the de-novo ORF's stop.
-There is a single NMD answer per isoform; ``nmd_basis`` records which ORF it came
+There is a single structural NMD hypothesis per isoform; ``nmd_basis`` records which ORF it came
 from (``resolved`` / ``denovo`` / ``none``).
 
 Rule cascade (each is a sufficient condition for escape, evaluated in order):
@@ -12,7 +12,7 @@ Rule cascade (each is a sufficient condition for escape, evaluated in order):
 3. Start-proximal: CDS shorter than ``START_PROXIMAL_NT`` (default 150) bp.
 4. The exon containing the PTC is longer than ``LONG_LAST_EXON_NT`` (default 400) bp
    (the long-exon rule; Lindeboom et al. 2016, on the PTC-bearing exon).
-Otherwise the transcript is NMD-sensitive (50nt rule violated).
+Otherwise the transcript is structurally compatible with NMD (50nt rule violated).
 
 Confidence is ``high`` for a resolved intact ORF, ``medium`` for a resolved but
 altered ORF (PTC / intron-retained / extension), ``low`` for a de-novo call (the
@@ -24,6 +24,11 @@ from enum import Enum
 import pandas as pd
 import pyranges as pr
 
+from craft.core.intervals import (
+    genomic_position_at_transcript_coordinate,
+    spliced_length,
+    transcript_coordinate,
+)
 from craft.core.orf.confidence import ORFConfidence
 
 PTC_THRESHOLD_NT = 50
@@ -44,6 +49,13 @@ _COLUMNS = [
     "stop_to_last_junction_nt",
     "last_exon_length_nt",
     "ptc_exon_length_nt",
+    "nmd_susceptibility",
+    "nmd_rule_score",
+    "nmd_evidence_tier",
+    "surveillance_status",
+    "surveillance_mechanism",
+    "nonstop_decay_candidate",
+    "surveillance_limitations",
 ]
 
 
@@ -65,44 +77,25 @@ def _stop_codon_genome(intervals: list[tuple], strand: str) -> int:
 
 
 def _distance_stop_to_last_junction(
-    stop_pos: int, exons: pd.DataFrame, strand: str
+    stop_codon_pos: int, exons: pd.DataFrame, strand: str
 ) -> tuple[int, bool]:
     """Distance (mRNA bp) from the stop codon to the last exon-exon junction.
 
     Returns ``(distance, is_in_last_exon)``. For single-exon transcripts and for
     stops in the transcript's last exon, returns ``(0, True)``.
     """
-    sorted_exons = exons.sort_values("Start").reset_index(drop=True)
-    n_exons = len(sorted_exons)
+    ordered = exons.sort_values("Start", ascending=strand == "+", kind="stable")
+    n_exons = len(ordered)
     if n_exons <= 1:
         return 0, True
-
-    mask = (sorted_exons["Start"] <= stop_pos) & (stop_pos < sorted_exons["End"])
-    if not mask.any():
+    stop_tx = transcript_coordinate(exons, stop_codon_pos, strand)
+    if stop_tx is None:
         return -1, False
-    stop_exon_idx = int(sorted_exons.index[mask][0])
-
-    if strand == "+":
-        last_exon_idx = n_exons - 1
-    elif strand == "-":
-        last_exon_idx = 0
-    else:
-        raise ValueError(f"Unsupported strand: {strand!r}")
-
-    if stop_exon_idx == last_exon_idx:
+    last_exon_start_tx = spliced_length(ordered.iloc[:-1])
+    if stop_tx >= last_exon_start_tx:
         return 0, True
-
-    stop_exon = sorted_exons.iloc[stop_exon_idx]
-    if strand == "+":
-        distance = int(stop_exon["End"]) - stop_pos
-        intermediate = range(stop_exon_idx + 1, last_exon_idx)
-    else:
-        distance = stop_pos - int(stop_exon["Start"])
-        intermediate = range(1, stop_exon_idx)
-    for i in intermediate:
-        ex = sorted_exons.iloc[i]
-        distance += int(ex["End"]) - int(ex["Start"])
-    return distance, False
+    # Transcript coordinates handle stop codons that cross an exon junction.
+    return last_exon_start_tx - (stop_tx + 3), False
 
 
 def _last_exon_length(exons: pd.DataFrame, strand: str) -> int:
@@ -137,16 +130,16 @@ def _cascade(
     ptc_threshold_nt: int,
     start_proximal_nt: int,
     long_last_exon_nt: int,
-) -> tuple[NMDStatus, str]:
+) -> tuple[NMDStatus, str, float]:
     if in_last:
-        return NMDStatus.ESCAPED, "stop_in_last_exon"
+        return NMDStatus.ESCAPED, "stop_in_last_exon", 0.05
     if distance <= ptc_threshold_nt:
-        return NMDStatus.ESCAPED, "within_50nt_of_last_junction"
+        return NMDStatus.ESCAPED, "within_50nt_of_last_junction", 0.10
     if cds_bp < start_proximal_nt:
-        return NMDStatus.ESCAPED, "start_proximal"
+        return NMDStatus.ESCAPED, "start_proximal", 0.20
     if ptc_exon_len > long_last_exon_nt:
-        return NMDStatus.ESCAPED, "long_exon"
-    return NMDStatus.SENSITIVE, "ptc_50nt_rule"
+        return NMDStatus.ESCAPED, "long_exon", 0.25
+    return NMDStatus.SENSITIVE, "ptc_50nt_rule", 0.80
 
 
 def _not_applicable(tx_id: str) -> dict:
@@ -159,6 +152,13 @@ def _not_applicable(tx_id: str) -> dict:
         "stop_to_last_junction_nt": None,
         "last_exon_length_nt": None,
         "ptc_exon_length_nt": None,
+        "nmd_susceptibility": "indeterminate",
+        "nmd_rule_score": None,
+        "nmd_evidence_tier": "none",
+        "surveillance_status": "indeterminate",
+        "surveillance_mechanism": "none",
+        "nonstop_decay_candidate": False,
+        "surveillance_limitations": "no_resolved_termination_event",
     }
 
 
@@ -192,6 +192,7 @@ def predict(
     iso_df = classified.df
     iso_strand = iso_df.groupby("transcript_id")["Strand"].first().to_dict()
     iso_exons_by_tx = {tx: g for tx, g in iso_df.groupby("transcript_id", sort=False)}
+    per_tx_meta = iso_df.groupby("transcript_id").first()
 
     resolved_by_tx: dict = {}
     if resolved is not None and not resolved.empty:
@@ -206,6 +207,8 @@ def predict(
         cds_bp = 0
         basis = "none"
         confidence = ORFConfidence.NONE
+        evidence_tier = "none"
+        limitation = ""
 
         res = resolved_by_tx.get(tx_id)
         if (
@@ -225,6 +228,22 @@ def predict(
                 confidence = ORFConfidence.LOW
             else:
                 confidence = ORFConfidence.MEDIUM
+            meta = per_tx_meta.loc[tx_id]
+            parent_ambiguous = bool(meta.get("parent_ambiguous", False))
+            reference_complete = bool(meta.get("reference_cds_complete", True))
+            reference_phase_valid = bool(meta.get("reference_cds_phase_valid", True))
+            reference_issues: list[str] = []
+            if parent_ambiguous:
+                reference_issues.append("ambiguous_reference_parent")
+            if not reference_complete:
+                reference_issues.append("incomplete_reference_cds")
+            if not reference_phase_valid:
+                reference_issues.append("inconsistent_reference_cds_phase")
+            if reference_issues:
+                evidence_tier = "moderate" if status_str == "intact" else "limited"
+                limitation = ";".join(reference_issues)
+            else:
+                evidence_tier = "strong" if status_str == "intact" else "moderate"
         else:
             dn = denovo_by_tx.get(tx_id)
             if (
@@ -237,18 +256,53 @@ def predict(
                 cds_bp = int(dn["denovo_cds_bp"])
                 basis = "denovo"
                 confidence = ORFConfidence.LOW
+                evidence_tier = "limited"
+                limitation = "de_novo_orf"
 
         if intervals is None:
-            rows.append(_not_applicable(tx_id))
+            row = _not_applicable(tx_id)
+            res = resolved_by_tx.get(tx_id)
+            resolved_status = str(res["resolved_orf_status"]) if res is not None else ""
+            completeness = str(per_tx_meta.loc[tx_id].get("completeness", ""))
+            if resolved_status == "right_censored" and completeness == "alt_3prime_end":
+                row.update(
+                    {
+                        "surveillance_status": "candidate",
+                        "surveillance_mechanism": "nonstop_decay",
+                        "nonstop_decay_candidate": True,
+                        "surveillance_limitations": (
+                            "polyadenylated_transcript_without_observed_stop"
+                        ),
+                    }
+                )
+            elif resolved_status in {"left_censored", "right_censored"}:
+                row["surveillance_limitations"] = f"{resolved_status}_orf"
+            rows.append(row)
             continue
 
         strand = str(iso_strand[tx_id])
         iso_exons = iso_exons_by_tx[tx_id]
-        stop_pos = _stop_codon_genome(intervals, strand)
+        res = resolved_by_tx.get(tx_id)
+        if res is not None and pd.notna(res.get("resolved_stop_codon_pos")):
+            stop_pos = int(res["resolved_stop_codon_pos"])
+        else:
+            # De-novo intervals omit the stop codon; advance one spliced base
+            # from the last sense base, including across an exon junction.
+            last_sense = _stop_codon_genome(intervals, strand)
+            last_sense_tx = transcript_coordinate(iso_exons, last_sense, strand)
+            stop_pos = (
+                genomic_position_at_transcript_coordinate(
+                    iso_exons, last_sense_tx + 1, strand
+                )
+                if last_sense_tx is not None else None
+            )
+            if stop_pos is None:
+                rows.append(_not_applicable(tx_id))
+                continue
         distance, in_last = _distance_stop_to_last_junction(stop_pos, iso_exons, strand)
         last_exon_len = _last_exon_length(iso_exons, strand)
         ptc_exon_len = _ptc_exon_length(stop_pos, iso_exons)
-        status, rule = _cascade(
+        status, rule, rule_score = _cascade(
             distance, in_last, cds_bp, ptc_exon_len,
             ptc_threshold_nt, start_proximal_nt, long_last_exon_nt,
         )
@@ -262,6 +316,15 @@ def predict(
                 "stop_to_last_junction_nt": int(distance),
                 "last_exon_length_nt": int(last_exon_len),
                 "ptc_exon_length_nt": int(ptc_exon_len),
+                "nmd_susceptibility": (
+                    "likely_sensitive" if status == NMDStatus.SENSITIVE else "likely_escape"
+                ),
+                "nmd_rule_score": rule_score,
+                "nmd_evidence_tier": evidence_tier,
+                "surveillance_status": "candidate" if status == NMDStatus.SENSITIVE else "none",
+                "surveillance_mechanism": "nmd" if status == NMDStatus.SENSITIVE else "none",
+                "nonstop_decay_candidate": False,
+                "surveillance_limitations": limitation,
             }
         )
     return pd.DataFrame(rows, columns=_COLUMNS)

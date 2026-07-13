@@ -89,7 +89,7 @@ def cli() -> None:
     default=50,
     show_default=True,
     help="PTC rule: stop more than this many mRNA-nt upstream of the last "
-    "exon-exon junction is NMD-sensitive.",
+    "exon-exon junction is predicted NMD-susceptible.",
 )
 @click.option(
     "--start-proximal-nt",
@@ -111,6 +111,13 @@ def cli() -> None:
     default=50,
     show_default=True,
     help="Minimum de novo ORF length in amino acids.",
+)
+@click.option(
+    "--infer-alternative-start",
+    is_flag=True,
+    default=False,
+    help="For a 5'-censored CDS, optionally infer the first downstream in-frame ATG. "
+    "Off by default because an internal ATG is not evidence of the biological start.",
 )
 @click.option(
     "--orf-high-confidence",
@@ -137,15 +144,15 @@ def cli() -> None:
     "--prefer-coding-parent",
     is_flag=True,
     default=False,
-    help="On ties (equal shared junctions and exon overlap), prefer a CDS-bearing "
-    "reference parent. Off by default to keep parent selection reproducible.",
+    help="Add a small explicit preference for a CDS-bearing reference parent in "
+    "otherwise close candidate rankings. Off by default.",
 )
 @click.option(
     "--coding-potential/--no-coding-potential",
     default=True,
     show_default=True,
     help="Score each isoform's ORF for coding potential, using a hexamer + ORF "
-    "model self-calibrated to the reference. Skipped if the reference has no "
+    "classifier trained on the reference. Skipped if the reference has no "
     "non-coding transcripts.",
 )
 @click.option(
@@ -164,15 +171,31 @@ def cli() -> None:
     help="Comma-separated column names to carry from --classification.",
 )
 @click.option(
+    "--evidence-table",
+    "evidence_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional per-isoform molecule/read evidence TSV from scNoiseMeter, tecap, "
+    "or a caller. Adds an explicit uncalibrated evidence score and tier; never filters rows.",
+)
+@click.option(
+    "--orf-comparator-gtf",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional independent CDS-annotated GTF (for example ORFanage output). "
+    "Reports start/stop/CDS agreement without allowing either caller to define truth.",
+)
+@click.option(
     "--recurrence-null",
     type=click.Choice(["none", "occupancy", "betabinom"]),
     default="none",
     show_default=True,
-    help="Calibrate per-cell recurrence against a null (needs --counts): "
-    "'occupancy' scatters each isoform's molecules across cells by depth and "
-    "tests the occupied-cell count; 'betabinom' fits an empirical beta-binomial "
+    help="Compare per-cell recurrence with an exploratory null (needs --counts): "
+    "'occupancy' uses a depth-aware Poissonized occupancy null; 'betabinom' fits "
+    "an empirical beta-binomial "
     "(stratified by structural_category when --classification is given). Emits "
-    "recurrence_pvalue / recurrence_score. 'none' leaves them empty.",
+    "recurrence_pvalue / recurrence_score. These are exploratory dispersion "
+    "statistics, not probabilities that an isoform is real. 'none' leaves them empty.",
 )
 def annotate(
     isoforms: Path,
@@ -189,6 +212,7 @@ def annotate(
     start_proximal_nt: int,
     long_last_exon_nt: int,
     min_orf_aa: int,
+    infer_alternative_start: bool,
     orf_high_confidence: float,
     orf_medium_confidence: float,
     long_utr3_nt: int,
@@ -196,9 +220,11 @@ def annotate(
     coding_potential: bool,
     classification_path: Path | None,
     classification_columns: str,
+    evidence_path: Path | None,
+    orf_comparator_gtf: Path | None,
     recurrence_null: str,
 ) -> None:
-    """Annotate isoforms with functional consequences (ORF, NMD, Pfam, 3' UTR)."""
+    """Annotate isoforms with structure evidence, ORFs, surveillance, and UTRs."""
     result = run_annotate(
         isoforms_path=isoforms,
         reference_path=reference,
@@ -213,6 +239,7 @@ def annotate(
         start_proximal_nt=start_proximal_nt,
         long_last_exon_nt=long_last_exon_nt,
         min_orf_aa=min_orf_aa,
+        infer_alternative_start=infer_alternative_start,
         orf_high_confidence=orf_high_confidence,
         orf_medium_confidence=orf_medium_confidence,
         long_utr3_nt=long_utr3_nt,
@@ -220,6 +247,8 @@ def annotate(
         coding_potential=coding_potential,
         classification_path=classification_path,
         classification_columns=classification_columns,
+        evidence_path=evidence_path,
+        orf_comparator_gtf=orf_comparator_gtf,
         group_by=group_by,
         recurrence_null=recurrence_null,
     )

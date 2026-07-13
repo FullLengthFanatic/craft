@@ -51,8 +51,8 @@ _ISO3 = [
     ("chr1", 500, 600, "+", "t1"),
 ]
 _INTACT_IV = [("chr1", 150, 200, "+"), ("chr1", 300, 400, "+"), ("chr1", 500, 560, "+")]
-_PTC_IV = [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")]
-_DN_IV = [("chr1", 150, 300, "+"), ("chr1", 400, 450, "+")]
+_PTC_IV = [("chr1", 150, 200, "+"), ("chr1", 300, 346, "+")]
+_DN_IV = [("chr1", 150, 300, "+"), ("chr1", 400, 446, "+")]
 
 
 def test_resolved_intact_stop_in_last_exon_escapes_high_conf() -> None:
@@ -69,7 +69,7 @@ def test_resolved_intact_stop_in_last_exon_escapes_high_conf() -> None:
 
 def test_resolved_ptc_far_from_last_junction_is_sensitive_medium() -> None:
     iso = _iso_pr(_ISO3)
-    # stop in exon 2 (last coding base 349), 51 nt from the exon2/exon3 junction.
+    # Stop codon begins at 346; 51 mRNA bases remain after the complete stop codon.
     res = pd.DataFrame(
         [_res("t1", "ptc_premature", _PTC_IV)]
     )
@@ -123,6 +123,18 @@ def test_no_stop_in_read_is_not_applicable() -> None:
     assert _row(predict(iso, res, None), "t1")["nmd_status"] == NMDStatus.NOT_APPLICABLE.value
 
 
+def test_polyadenylated_right_censored_orf_is_nonstop_decay_candidate() -> None:
+    iso = _iso_pr(_ISO3)
+    df = iso.df.copy()
+    df["completeness"] = "alt_3prime_end"
+    iso = pr.PyRanges(df)
+    res = pd.DataFrame([_res("t1", "right_censored", [], cds_bp=0, stop=False)])
+    row = _row(predict(iso, res, None), "t1")
+    assert row["nmd_susceptibility"] == "indeterminate"
+    assert bool(row["nonstop_decay_candidate"])
+    assert row["surveillance_mechanism"] == "nonstop_decay"
+
+
 def test_start_proximal_escape() -> None:
     iso = _iso_pr(_ISO3)
     # short CDS (< 150 bp) escapes via re-initiation even with a far stop.
@@ -168,7 +180,7 @@ def test_long_terminal_exon_does_not_rescue_ptc_in_short_exon() -> None:
         ]
     )
     res = pd.DataFrame(
-        [_res("t1", "ptc_premature", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])]
+        [_res("t1", "ptc_premature", [("chr1", 150, 200, "+"), ("chr1", 300, 346, "+")])]
     )
     r = _row(predict(iso, res, None), "t1")
     assert r["nmd_status"] == NMDStatus.SENSITIVE.value
@@ -192,6 +204,24 @@ def test_minus_strand_sensitive() -> None:
     )
     r = _row(predict(iso, res, None), "t1")
     assert r["nmd_status"] in {NMDStatus.SENSITIVE.value, NMDStatus.ESCAPED.value}
+
+
+def test_stop_codon_crossing_junction_uses_spliced_distance() -> None:
+    iso = _iso_pr(
+        [
+            ("chr1", 100, 200, "+", "t1"),
+            ("chr1", 300, 400, "+", "t1"),
+            ("chr1", 500, 600, "+", "t1"),
+        ]
+    )
+    # Stop begins at the penultimate base of exon 2 and ends at the first base
+    # of exon 3. There are no mRNA bases between the complete stop and the last
+    # junction, irrespective of the size of the genomic intron.
+    res = pd.DataFrame([_res("t1", "ptc_premature", _PTC_IV)])
+    res["resolved_stop_codon_pos"] = 398
+    row = _row(predict(iso, res, None), "t1")
+    assert row["stop_to_last_junction_nt"] == -1
+    assert row["nmd_rule"] == "within_50nt_of_last_junction"
 
 
 def test_empty_classified_returns_empty() -> None:

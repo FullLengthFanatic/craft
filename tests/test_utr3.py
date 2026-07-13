@@ -80,11 +80,11 @@ def test_annotate_full_length_zero_deltas_and_motif(tmp_path: Path) -> None:
         cds=[("chr1", 150, 200, "+", "t_ref"), ("chr1", 300, 350, "+", "t_ref")],
     )
     res = _res("t1", "intact", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])
-    genome = _write_genome(tmp_path, 400, [(350, "AATAAA")])  # motif in the 3'UTR
+    genome = _write_genome(tmp_path, 400, [(360, "AATAAA")])  # motif in the 3'UTR
     out = annotate(classified, res, ref, genome_fasta=genome)
     r = out[out["transcript_id"] == "t1"].iloc[0]
-    assert r["iso_utr3_length_nt"] == 50  # exon2 [350,400)
-    assert r["parent_utr3_length_nt"] == 50
+    assert r["iso_utr3_length_nt"] == 47  # stop [350,353), UTR [353,400)
+    assert r["parent_utr3_length_nt"] == 47
     assert r["utr3_length_delta_nt"] == 0
     assert r["iso_utr5_length_nt"] == 50  # exon1 [100,150)
     assert r["utr5_length_delta_nt"] == 0
@@ -102,9 +102,24 @@ def test_annotate_long_utr3_flag(tmp_path: Path) -> None:
     res = _res("t1", "intact", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])
     out = annotate(classified, res, ref, genome_fasta=None, long_utr3_nt=1000)
     r = out[out["transcript_id"] == "t1"].iloc[0]
-    assert r["iso_utr3_length_nt"] == 1650
+    assert r["iso_utr3_length_nt"] == 1647
     assert r["long_utr3_triggers_nmd"]
     assert r["polya_signal_motif"] == ""  # no genome -> no scan
+
+
+def test_utr3_excludes_split_stop_codon_across_junction(tmp_path: Path) -> None:
+    iso = [("chr1", 100, 105, "+"), ("chr1", 300, 310, "+")]
+    classified = _classified(iso, "t_ref")
+    ref = _reference(
+        exons=[("chr1", 100, 105, "+", "t_ref"), ("chr1", 300, 310, "+", "t_ref")],
+        cds=[("chr1", 100, 104, "+", "t_ref")],
+    )
+    res = _res("t1", "intact", [("chr1", 100, 104, "+")])
+    res["resolved_stop_codon_pos"] = 103
+    out = annotate(classified, res, ref, genome_fasta=None)
+    row = out.iloc[0]
+    # Stop bases are genomic 103, 104 and 300; UTR is exon-2 positions 301..309.
+    assert row["iso_utr3_length_nt"] == 9
 
 
 def test_annotate_resolution_failed_yields_nulls(tmp_path: Path) -> None:

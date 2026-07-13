@@ -1,6 +1,6 @@
 """Plotly figure builders for the HTML report.
 
-A single shared theme plus semantic colors: warm = NMD-sensitive / PTC /
+A single shared theme plus semantic colors: warm = predicted NMD susceptibility / PTC /
 intron-retained, green = intact / coding / escaped, grey = not-applicable /
 novel / resolution-failed.
 """
@@ -32,6 +32,9 @@ COLOR = {
     "ptc_premature": _ORANGE,
     "ptc_intron_retained": _DARKRED,
     "cds_extension": _PURPLE,
+    "start_rescued": _PURPLE,
+    "left_censored": _AMBER,
+    "right_censored": _AMBER,
     "no_stop_in_read": _AMBER,
     "resolution_failed": _GREY,
     # coding potential
@@ -77,6 +80,8 @@ def category_bar(
         return _theme(go.Figure(), title, height=200)
     if order:
         items = [(k, counts.get(k, 0)) for k in order if counts.get(k, 0)]
+        known = {k for k, _ in items}
+        items.extend((k, v) for k, v in counts.items() if k not in known and v)
     else:
         items = sorted(counts.items(), key=lambda kv: kv[1])
     cats = [str(k) for k, _ in items]

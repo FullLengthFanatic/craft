@@ -2,32 +2,27 @@
 
 **Coding Region Annotation From Templates**
 
-![status](https://img.shields.io/badge/status-pre--alpha-orange)
+![status](https://img.shields.io/badge/status-v2_development-orange)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20844836.svg)](https://doi.org/10.5281/zenodo.20844836)
 
-A Python toolkit for long-read isoform functional-consequence annotation. Takes
-the output of any long-read isoform caller (FLAIR, IsoQuant, Bambu, FLAMES,
-SQANTI3, isoseq+pigeon) and emits per-isoform structural completeness, ORF
-status, NMD susceptibility, 3' UTR features, and (optionally) Pfam domain
-preservation.
+CRAFT is an evidence-aware functional annotation toolkit for long-read
+single-cell transcriptomes. It accepts isoforms from Pigeon/SQANTI3, IsoQuant,
+Bambu, FLAIR, FLAMES, or another caller and keeps four questions separate:
 
-The methods novelty is **reference-isoform ORF propagation with truncation-aware
-confidence**. When an iso is truncated but still covers the parent transcript's
-CDS region, CRAFT projects the parent's ORF coordinates onto the iso and flags
-exactly where the call becomes uncertain (start codon outside the read, stop
-codon outside the read, structural divergence in CDS). De-novo ORF prediction is
-used only as a fallback for genuinely novel isoforms.
+1. How well is the transcript structure supported by molecules and orthogonal evidence?
+2. Which transcript ends—and therefore which CDS boundaries—were actually observed?
+3. What coding sequence is supported by the reference and by the observed sequence?
+4. Which RNA-surveillance rules could apply if that isoform exists in the cell?
 
-New to CRAFT, or sending it to a collaborator? Start with the
-[white paper](docs/whitepaper.md): a plain-language primer on the ORF/NMD logic and
-the depth-stable isoform filtering. For the full method tied to the exact code,
-every parameter and where to change it, the design rationale, and the strengths and
-limitations versus other tools, read
-[`docs/craft_explained.md`](docs/craft_explained.md). Every output column is defined
-in [`docs/features.md`](docs/features.md), and [`docs/user_guide.md`](docs/user_guide.md)
-covers running CRAFT end to end.
+That separation is the central v2 design decision. Cell recurrence is descriptive,
+not a probability that an isoform is real. An internal ATG is not silently promoted
+to the biological start. An NMD rule match is reported as predicted susceptibility,
+not observed degradation.
+
+CRAFT never deletes input rows. It exposes evidence, ambiguity, censoring, and
+limitations so that filtering can be calibrated on positive and negative controls.
 
 ## Install
 
@@ -35,162 +30,135 @@ covers running CRAFT end to end.
 pip install -e ".[dev]"
 ```
 
-Requires Python ≥ 3.10. Runtime dependencies: pysam, pyranges, pandas, plotly,
-pyhmmer, orfipy, anndata, click. No R, no Java, no scanpy.
+Python 3.10 or newer is required.
 
 ## Quick start
 
 ```bash
 craft annotate \
-    --isoforms  /path/to/iso.gtf \
-    --reference /path/to/gencode.v45.annotation.gtf \
-    --genome    /path/to/GRCh38.fa \
-    --output-dir out/
+  --isoforms isoforms.gtf \
+  --reference gencode.annotation.gtf \
+  --genome genome.fa \
+  --classification pigeon_classification.txt \
+  --evidence-table molecule_evidence.tsv \
+  --output-dir craft_out
 ```
 
-Optional flags:
+Useful optional inputs:
 
-- `--counts h5ad_file_or_10x_mtx_dir` per-cell counts; populates `annotated.h5ad`
-  and recurrence columns (`total_count`, `n_cells_detected`, `isoform_fraction_within_gene`).
-- `--cell-whitelist PATH` called-cell barcodes (one per line); with `--counts`,
-  recurrence metrics are computed over these cells only; otherwise over every barcode.
-- `--group-by obs_column` with `--counts`, aggregates functional consequences per
-  cell group into `per_celltype_consequence.tsv`.
-- `--pfam-hmm Pfam-A.hmm` enables Pfam domain preservation analysis (slow with
-  full Pfam; a future release will switch to `hmmscan` against a pressed database).
-- `--polya-atlas sites.bed` provides curated polyA sites (PolyASite v3.0,
-  PolyA_DB v4, or any user-supplied BED 6+). When supplied, atlas hits drive
-  the ALT_3PRIME_END / STOP_AT_ALT_POLYA reclassification with the canonical
-  poly(A) motif scan as fallback. **Pre-filter the atlas by usage score**
-  (`awk '$5 >= 0.01'` for PolyASite v3.0) before passing — the unfiltered
-  atlas is too dense (~one PAS every 200 bp) and produces uninformative
-  98% match rates. See [`docs/user_guide.md`](docs/user_guide.md) for the
-  BED format spec, recommended sources, and the full stringency story.
-- `--no-coding-potential` turns off the reference-calibrated coding-potential
-  score (on by default). Threshold flags (`--ptc-threshold-nt`, `--min-orf-aa`,
-  ...) are listed in [`docs/features.md`](docs/features.md#command-line-options).
-- `--classification sqanti_classification.txt` joins SQANTI3/pigeon columns
-  (default `structural_category`) onto the output by transcript_id, so you can
-  cut novel-boundary classes against CRAFT's consequence calls.
+- `--counts counts.h5ad` adds per-cell abundance and detection summaries.
+- `--classification FILE` imports SQANTI3/Pigeon structural class and parent/gene hints.
+- `--evidence-table FILE` imports molecule-level and artifact evidence and emits a
+  transparent, explicitly uncalibrated evidence score and tier.
+- `--orf-comparator-gtf FILE` compares CRAFT with an independent CDS caller such as
+  ORFanage without treating either answer as truth.
+- `--polya-atlas FILE` adds curated cleavage/polyadenylation-site evidence.
+- `--pfam-hmm Pfam-A.hmm` compares predicted protein-domain content.
+- `--infer-alternative-start` opts into downstream in-frame ATG inference for
+  5'-censored transcripts. It is off by default.
 
-Runtime on chr22 of a real FLIGHT-seq sample (~13k isoforms): ~2 minutes.
-Full-genome scale runs end-to-end: the bcM0003 FLIGHT-seq sample (698,049
-isoforms, with `--polya-atlas` and coding potential on, no `--pfam-hmm`) takes
-~1h45m wall and ~19 GB RAM on a 32-core VM.
+Run `craft annotate --help` for the complete option list.
 
 ## Inputs
 
-| Input            | Required | Format                                           |
-| ---------------- | -------- | ------------------------------------------------ |
-| Isoform GTF      | yes      | GTF with `exon` rows and a `transcript_id` attr  |
-| Reference GTF    | yes      | GTF with `exon` AND `CDS` rows (GENCODE/Ensembl) |
-| Genome FASTA     | yes      | indexed (`.fai` built on-the-fly if missing)     |
-| Per-cell counts  | no       | `.h5ad` or 10x-style MTX directory               |
-| Pfam HMM         | no       | pyhmmer-compatible `.hmm` (e.g. `Pfam-A.hmm`)    |
+| Input | Required | Purpose |
+| --- | --- | --- |
+| Isoform GTF | yes | Exon structures keyed by `transcript_id` |
+| Reference GTF | yes | Exons, CDS, and preferably explicit start/stop codons and tags |
+| Genome FASTA | yes | Sequence reconstruction; indexed automatically when possible |
+| Classification table | no | Structural categories plus parent/gene hints |
+| Evidence table | no | Unique/ambiguous support, junction, end, artifact, and replicate evidence |
+| Per-cell counts | no | Abundance, detection fraction, and group summaries |
+| Independent ORF GTF | no | Caller agreement/disagreement analysis |
 
-All three required inputs must use the same chromosome naming (`chr1` vs `1`).
+All genomic inputs must use the same assembly and chromosome naming convention.
 
 ## Outputs
 
-| File                          | Description                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| `per_isoform.tsv`             | per-iso annotation table, 66 columns, list columns JSON-encoded             |
-| `per_isoform.json`            | same content as records; list columns stay as lists                         |
-| `report.html`                 | self-contained interactive report (summary cards + plotly + table)          |
-| `annotated.h5ad`              | AnnData with iso annotations in `var`, per-cell counts in `X` (if given)    |
-| `per_celltype_consequence.tsv`| with `--counts --group-by`: consequence fractions per cell group            |
+| File | Description |
+| --- | --- |
+| `per_isoform.tsv` | Versioned per-isoform annotation; optional inputs add populated evidence blocks |
+| `per_isoform.json` | Same records with list-valued fields preserved |
+| `report.html` | Self-contained exploratory report |
+| `annotated.h5ad` | Annotation in `var` and, when supplied, per-cell counts in `X` |
+| `per_celltype_consequence.tsv` | Molecule-weighted group summaries with `--counts --group-by` |
+| `per_celltype_as_nmd.tsv` | Evidence-supported predicted AS–NMD candidates by group |
 
-Every column is documented in [`docs/features.md`](docs/features.md).
+The authoritative field definitions are in [`docs/features.md`](docs/features.md).
 
-### What the report looks like
+## Interpretation
 
-`report.html` is a self-contained, interactive page: summary cards, distribution
-charts, and notable-findings tables. Here it is on the BD70 FLIGHT-seq sample
-(186,079 isoforms):
+The main v2 fields are:
 
-<p align="center"><img src="docs/figures/report-full.png" alt="CRAFT HTML report" width="900"></p>
+- `isoform_evidence_tier`: independent structure evidence; `insufficient_evidence`
+  means missing inputs, not a failed transcript.
+- `parent_ambiguous`, `parent_match_margin`: whether reference-parent assignment is
+  unique enough to support propagation.
+- `orf_censoring`: `none`, `left`, `right`, or `both`; a missing transcript end is
+  treated as censoring, not as a discovered CDS boundary.
+- `resolved_orf_status`: includes `left_censored` and `right_censored` rather than
+  inventing a start or calling a terminal truncation a complete ORF.
+- `nmd_susceptibility`, `nmd_evidence_tier`, `surveillance_limitations`: structural
+  prediction, strength of supporting annotation, and reasons not to over-interpret it.
+- `nonstop_decay_candidate`: a separate flag for right-censored/stopless molecules.
 
-The key distribution panels, rendered from the same run:
-
-<p align="center">
-  <img src="docs/figures/report-completeness.png" alt="Completeness distribution" width="46%">
-  <img src="docs/figures/report-resolved-orf.png" alt="Resolved ORF status distribution" width="46%">
-</p>
-<p align="center">
-  <img src="docs/figures/report-nmd-status.png" alt="NMD status distribution" width="46%">
-  <img src="docs/figures/report-coding-potential.png" alt="Coding-potential score histogram" width="46%">
-</p>
-
-CRAFT classifies each ORF by geometric propagation (`orf_outcome`,
-`propagated_cds_*`) and then reconstructs the spliced CDS to find the real stop
-(`resolved_orf_status`, `intron_retained_in_cds`, ...). NMD and UTR consequences
-are computed once from the resolved ORF (single `nmd_status`, with a de-novo
-fallback for orphans recorded in `nmd_basis`).
-
-## Filter recipes
+Example downstream selection:
 
 ```python
 import pandas as pd
-df = pd.read_csv("out/per_isoform.tsv", sep="\t")
 
-# recurrent isoforms (with --counts)
-df[df["n_cells_detected"] >= 3]
+df = pd.read_csv("craft_out/per_isoform.tsv", sep="\t")
 
-# trustworthy ORF calls
-df[df["orf_confidence"].isin(["high", "medium"])]
+# Structure-supported isoforms with a non-ambiguous propagated parent.
+supported = df[
+    df["isoform_evidence_tier"].isin(["strong", "supported"])
+    & ~df["parent_ambiguous"].fillna(True)
+]
 
-# biological NMD substrates (not truncation artefacts)
-df[(df["nmd_status"] == "sensitive") & (df["nmd_confidence"] == "high")]
-
-# alternative 3' UTR isoforms with a canonical poly(A) signal
-df[(df["utr3_length_delta_nt"] != 0) & (df["polya_signal_motif"] != "")]
-
-# novel coding isoforms supported by a de-novo ORF
-df[(df["orf_outcome"] == "no_parent") & (df["denovo_orf_found"])]
-
-# APA isoforms (alternative 3' end backed by a poly(A) signal)
-df[df["completeness"] == "alt_3prime_end"]
+# Predicted NMD candidates with complete ORF boundaries and stronger evidence.
+nmd_candidates = supported[
+    (supported["nmd_susceptibility"] == "likely_sensitive")
+    & supported["nmd_evidence_tier"].isin(["high", "moderate"])
+    & (supported["orf_censoring"] == "none")
+]
 ```
 
-## How it works (one paragraph)
+Do not copy these cuts blindly. The evidence score is not calibrated to a target
+false-discovery rate; tune thresholds with spike-ins, technical replicates,
+reference holdouts, and plausible artifact decoys from the assay being analysed.
 
-For each iso: pick the best-matching reference parent by maximal splice-junction
-sharing. Classify the iso's structural completeness from its end positions vs
-the parent's. Propagate the parent's CDS coordinates onto the iso, flagging
-cases where the start or stop codon falls outside the read. Then reconstruct the
-iso's own spliced CDS and walk it to the real in-frame stop, which catches
-frameshifts, exon-skip premature stops, and introns retained in the CDS
-(`resolved_*` columns). Apply NMD rules once to the resolved stop
-(50nt PTC rule + start-proximal, long-last-exon, and last-exon escapes), falling
-back to the de-novo ORF for orphan isoforms (`nmd_basis`). Compute 3'/5' UTR length deltas and scan
-for poly(A) signals. Score each ORF for coding potential against a model
-self-calibrated to the reference. Optionally scan the translated CDS against a
-Pfam HMM database. Emit TSV, JSON, HTML report, and AnnData.
+## Algorithm in brief
 
-For the full algorithm, threshold defaults, and design rationale, see
-[`docs/craft_explained.md`](docs/craft_explained.md).
+CRAFT ranks parent candidates using exact/contained intron-chain agreement,
+junction precision and recall, overlap, upstream parent/gene hints, and curated
+reference metadata. It reports ambiguity instead of hiding close ties. It projects
+the chosen reference CDS, reconstructs the observed spliced sequence, and records
+whether start and stop codons are observed or censored. Novel/orphan isoforms get a
+de novo ORF candidate, clearly labelled as such. Rule-based RNA-surveillance
+susceptibility is then reported with its evidence tier and limitations. Coding
+potential and Pfam provide supporting features, not ground truth.
 
-## What CRAFT does *not* do
+See [`docs/v2_design.md`](docs/v2_design.md) for the scientific contract and
+literature context, [`docs/migration_v2.md`](docs/migration_v2.md) for changed
+semantics, and [`docs/user_guide.md`](docs/user_guide.md) for operations.
 
-- It does not do structural QC. The iso GTF is assumed to be post-QC (e.g.,
-  pigeon, SQANTI3-curated). CRAFT describes what's there, it doesn't filter.
-- It does not call cell types. With `--group-by` it summarises functional
-  consequences per existing cell grouping, but clustering/cell-typing is upstream.
-- It does not harmonise chromosome naming. All three inputs must agree.
+## Scope and limitations
 
-Since v1.5 it detects intron retention inside the CDS and the resulting
-premature stops (`intron_retained_in_cds`, `resolved_orf_status`).
+- CRAFT annotates and ranks evidence; it is not itself a long-read aligner,
+  transcript assembler, cell caller, or universally calibrated isoform filter.
+- Reference annotation is evidence, not truth. Reference completeness, phase,
+  APPRIS/MANE/CCDS/basic tags, and parent ambiguity are retained in the output.
+- Structural rules cannot establish actual NMD. Validation requires perturbation,
+  half-life, translation, or other orthogonal data.
+- A 5'-truncated long read cannot by itself identify the true translation start.
+- The supplied evidence score is transparent and useful for triage, but requires
+  assay-specific calibration before being interpreted as a decision boundary.
 
-## Status
+## Development status
 
-v1.9.0. The pipeline runs end-to-end on real long-read isoform GTFs at
-full-genome scale. Validated on a FLIGHT-seq sample (chr22 subset and the
-full bcM0003 sample, ~698k isoforms).
+The branch is v2.0.0 development code. The scientific semantics have intentionally
+changed from v1; read the migration guide before comparing old and new tables.
 
-## Citation
+## Citation and license
 
-See [`CITATION.cff`](CITATION.cff).
-
-## License
-
-MIT. See [`LICENSE`](LICENSE).
+See [`CITATION.cff`](CITATION.cff). CRAFT is MIT licensed; see [`LICENSE`](LICENSE).

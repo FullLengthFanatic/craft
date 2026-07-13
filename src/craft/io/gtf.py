@@ -13,6 +13,7 @@ unstranded after a downstream `.df` round-trip.
 
 from pathlib import Path
 
+import pandas as pd
 import pyranges as pr
 
 
@@ -22,6 +23,29 @@ def _normalise(df, columns: list[str]) -> pr.PyRanges:
     if "Feature" in df.columns:
         df["Feature"] = df["Feature"].astype(str)
     return pr.PyRanges(df)
+
+
+def _present(df: pd.DataFrame, required: list[str], optional: list[str]) -> list[str]:
+    """Return required columns plus optional annotation metadata that are present."""
+    return [*required, *(column for column in optional if column in df.columns)]
+
+
+_ISOFORM_OPTIONAL = ["gene_id", "gene_name"]
+
+# Keep the reference fields needed to judge whether a CDS is complete and to
+# prioritize curated parents.  PyRanges/read_gtf exposes GTF column 8 as Frame.
+_REFERENCE_OPTIONAL = [
+    "gene_name",
+    "Frame",
+    "transcript_type",
+    "transcript_biotype",
+    "gene_type",
+    "gene_biotype",
+    "transcript_support_level",
+    "tag",
+    "ccdsid",
+    "havana_transcript",
+]
 
 
 def load_isoforms(path: Path) -> pr.PyRanges:
@@ -39,13 +63,16 @@ def load_isoforms(path: Path) -> pr.PyRanges:
     gr = pr.read_gtf(str(path))
     df = gr.df
     df = df[df["Feature"] == "exon"]
-    return _normalise(df, ["Chromosome", "Start", "End", "Strand", "transcript_id"])
+    required = ["Chromosome", "Start", "End", "Strand", "transcript_id"]
+    return _normalise(df, _present(df, required, _ISOFORM_OPTIONAL))
 
 
 def load_reference(path: Path) -> pr.PyRanges:
     """Load reference annotation records from a GTF.
 
-    Filters to ``Feature in {"exon", "CDS"}`` rows and returns a PyRanges with
+    Keeps exon, CDS, explicit start-codon and explicit stop-codon rows.  It also
+    preserves CDS phase and transcript-quality fields when present; downstream
+    code must not silently treat an incomplete reference CDS as complete.
     columns ``Chromosome``, ``Start``, ``End``, ``Strand``, ``transcript_id``,
     ``Feature``, ``gene_id``, and (if the GTF has it) ``gene_name``.
 
@@ -57,8 +84,9 @@ def load_reference(path: Path) -> pr.PyRanges:
     """
     gr = pr.read_gtf(str(path))
     df = gr.df
-    df = df[df["Feature"].isin(["exon", "CDS"])]
-    columns = ["Chromosome", "Start", "End", "Strand", "transcript_id", "Feature", "gene_id"]
-    if "gene_name" in df.columns:
-        columns.append("gene_name")
+    df = df[df["Feature"].isin(["exon", "CDS", "start_codon", "stop_codon"])]
+    required = [
+        "Chromosome", "Start", "End", "Strand", "transcript_id", "Feature", "gene_id"
+    ]
+    columns = _present(df, required, _REFERENCE_OPTIONAL)
     return _normalise(df, columns)

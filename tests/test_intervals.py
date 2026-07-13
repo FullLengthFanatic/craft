@@ -3,7 +3,11 @@
 import pandas as pd
 import pyranges as pr
 
-from craft.core.intervals import splice_junctions
+from craft.core.intervals import (
+    genomic_position_at_transcript_coordinate,
+    splice_junctions,
+    transcript_coordinate,
+)
 
 
 def _exons(records: list[tuple]) -> pr.PyRanges:
@@ -92,3 +96,15 @@ def test_strand_preserved_on_minus() -> None:
     )
     j = splice_junctions(exons).df
     assert j["Strand"].iloc[0] == "-"
+
+
+def test_transcript_coordinate_round_trip_across_junctions() -> None:
+    exons = pd.DataFrame({"Start": [100, 300], "End": [105, 310]})
+    cases = (
+        ("+", [(0, 100), (4, 104), (5, 300), (14, 309)]),
+        ("-", [(0, 309), (9, 300), (10, 104), (14, 100)]),
+    )
+    for strand, positions in cases:
+        for expected, genomic in positions:
+            assert transcript_coordinate(exons, genomic, strand) == expected
+            assert genomic_position_at_transcript_coordinate(exons, expected, strand) == genomic

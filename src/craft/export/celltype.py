@@ -127,6 +127,8 @@ _AS_NMD_COLUMNS = [
     "nmd_confidence",
     "recurrence_score",
     "n_cells_detected",
+    "isoform_evidence_tier",
+    "isoform_evidence_score",
     "molecules_in_group",
     "frac_of_group",
 ]
@@ -141,14 +143,15 @@ def celltype_as_nmd(
     recurrence_score_min: float = 0.95,
     min_cells: int = 3,
 ) -> pd.DataFrame:
-    """Per-cell-group listing of recurrent, NMD-sensitive isoforms (an AS-NMD map).
+    """Per-cell-group listing of predicted NMD candidates (an AS-NMD map).
 
-    The question a caller/quantifier cannot answer: *which* NMD-sensitive isoforms
+    The question a caller/quantifier cannot answer: *which* predicted NMD-susceptible isoforms
     are recurrently expressed in *which* cell populations. For each group this
-    lists the isoforms that are NMD-sensitive, recurrent, and expressed in that
-    group, with their molecule support. Recurrence uses ``recurrence_score >=
-    recurrence_score_min`` when that column is populated (from ``--recurrence-null``),
-    else ``n_cells_detected >= min_cells``, else expression alone.
+    lists predicted NMD candidates expressed in each group with their molecule
+    support.  When independent molecule/read evidence is available, only strong
+    or supported isoforms are included. Recurrence remains descriptive and never
+    decides whether an isoform is real. ``recurrence_score_min`` and ``min_cells``
+    are retained for API compatibility but are intentionally ignored in v2.
 
     Args:
         adata: per-cell counts (isoforms in ``var`` indexed by ``transcript_id``).
@@ -178,14 +181,13 @@ def celltype_as_nmd(
     per = per_isoform.copy()
     per["transcript_id"] = per["transcript_id"].astype(str)
     consequential = per["nmd_status"] == "sensitive"
-    if "recurrence_score" in per.columns and per["recurrence_score"].notna().any():
-        recurrent = per["recurrence_score"].fillna(0.0) >= recurrence_score_min
-    elif "n_cells_detected" in per.columns and per["n_cells_detected"].notna().any():
-        recurrent = per["n_cells_detected"].fillna(0) >= min_cells
+    del recurrence_score_min, min_cells
+    if "isoform_evidence_tier" in per.columns and per["isoform_evidence_tier"].notna().any():
+        supported = per["isoform_evidence_tier"].isin({"strong", "supported"})
     else:
-        recurrent = pd.Series(True, index=per.index)
+        supported = pd.Series(True, index=per.index)
 
-    qualifying = per[consequential & recurrent].set_index("transcript_id")
+    qualifying = per[consequential & supported].set_index("transcript_id")
     if qualifying.empty:
         return empty
 
@@ -217,6 +219,12 @@ def celltype_as_nmd(
                     "nmd_confidence": str(meta.get("nmd_confidence", "") or ""),
                     "recurrence_score": meta.get("recurrence_score", float("nan")),
                     "n_cells_detected": meta.get("n_cells_detected", float("nan")),
+                    "isoform_evidence_tier": str(
+                        meta.get("isoform_evidence_tier", "") or ""
+                    ),
+                    "isoform_evidence_score": meta.get(
+                        "isoform_evidence_score", float("nan")
+                    ),
                     "molecules_in_group": molecules,
                     "frac_of_group": molecules / total if total > 0 else float("nan"),
                 }
