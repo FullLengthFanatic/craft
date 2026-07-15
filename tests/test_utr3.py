@@ -137,6 +137,26 @@ def test_annotate_resolution_failed_yields_nulls(tmp_path: Path) -> None:
     assert r["polya_signal_motif"] == ""
 
 
+def test_annotate_parent_stop_unplaceable_skips_parent_delta(tmp_path: Path) -> None:
+    # Parent CDS ends exactly at the transcript 3' end and has no stop_codon record
+    # (e.g. GENCODE cds_end_NF): the stop codon cannot be placed on its exon chain.
+    # This must not crash the run; the parent-relative 3'UTR fields are left empty
+    # while the isoform's own 3'UTR is still reported.
+    iso = [("chr1", 100, 200, "+"), ("chr1", 300, 400, "+")]
+    classified = _classified(iso, "t_ref")
+    ref = _reference(
+        exons=[("chr1", 100, 200, "+", "t_ref")],
+        cds=[("chr1", 150, 200, "+", "t_ref")],
+    )
+    res = _res("t1", "intact", [("chr1", 150, 200, "+"), ("chr1", 300, 350, "+")])
+    res["resolved_stop_codon_pos"] = 350
+    out = annotate(classified, res, ref, genome_fasta=None)
+    r = out[out["transcript_id"] == "t1"].iloc[0]
+    assert r["iso_utr3_length_nt"] == 47
+    assert pd.isna(r["parent_utr3_length_nt"])
+    assert pd.isna(r["utr3_length_delta_nt"])
+
+
 def test_polya_near_3prime_end_plus_strand(tmp_path: Path) -> None:
     genome = _write_genome(tmp_path, 200, [(140, "AATAAA")])
     exons = pd.DataFrame(

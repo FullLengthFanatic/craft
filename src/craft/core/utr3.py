@@ -79,7 +79,7 @@ def _utr3_length(exons: pd.DataFrame, stop_codon_pos: int, strand: str) -> int:
     return max(spliced_length(exons) - (stop_tx + 3), 0)
 
 
-def _parent_stop_codon_pos(parent_df: pd.DataFrame, strand: str) -> int:
+def _parent_stop_codon_pos(parent_df: pd.DataFrame, strand: str) -> int | None:
     stop = parent_df[parent_df["Feature"] == "stop_codon"]
     if not stop.empty:
         if strand == "+":
@@ -91,13 +91,14 @@ def _parent_stop_codon_pos(parent_df: pd.DataFrame, strand: str) -> int:
         int(cds_df["End"].max()) - 1 if strand == "+" else int(cds_df["Start"].min())
     )
     last_sense_tx = transcript_coordinate(exons, last_sense, strand)
-    stop_pos = (
+    # None when the parent CDS ends at the transcript 3' end and no stop_codon is
+    # annotated (e.g. GENCODE cds_end_NF): the stop base falls off the exon chain.
+    # Return None so the caller skips the parent-relative 3'UTR fields for this
+    # isoform rather than crashing the whole run.
+    return (
         genomic_position_at_transcript_coordinate(exons, last_sense_tx + 1, strand)
         if last_sense_tx is not None else None
     )
-    if stop_pos is None:
-        raise ValueError("Could not place the parent stop codon on its exon chain")
-    return stop_pos
 
 
 def _start_pos(parent_df: pd.DataFrame, strand: str) -> int:
@@ -327,13 +328,14 @@ def annotate(
                 row["long_utr3_triggers_nmd"] = iso_utr3 > long_utr3_nt
                 if parent_records is not None and parent_exons is not None:
                     parent_stop = _parent_stop_codon_pos(parent_records, strand)
-                    parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
-                    row["parent_utr3_length_nt"] = parent_utr3
-                    row["utr3_length_delta_nt"] = iso_utr3 - parent_utr3
-                    if parent_utr3 > 0:
-                        row["utr3_length_delta_pct"] = (
-                            (iso_utr3 - parent_utr3) / parent_utr3 * 100.0
-                        )
+                    if parent_stop is not None:
+                        parent_utr3 = _utr3_length(parent_exons, parent_stop, strand)
+                        row["parent_utr3_length_nt"] = parent_utr3
+                        row["utr3_length_delta_nt"] = iso_utr3 - parent_utr3
+                        if parent_utr3 > 0:
+                            row["utr3_length_delta_pct"] = (
+                                (iso_utr3 - parent_utr3) / parent_utr3 * 100.0
+                            )
                 if genome is not None and iso_utr3 > 0:
                     seq = _extract_utr3_sequence(iso_exons, iso_stop, strand, genome)
                     sig = polya_signal(seq)
