@@ -1,7 +1,7 @@
 # CRAFT contributor context
 
 CRAFT is an evidence-aware long-read isoform functional annotator. Current
-development version: `2.0.0.dev0`.
+version: `2.0.0`.
 
 ## Scientific contracts
 

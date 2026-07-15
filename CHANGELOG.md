@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-15
+
+The v2 evidence-aware redesign, and the first major-version release. Output
+columns, ORF/NMD semantics, and parent selection all changed relative to v1;
+see `docs/migration_v2.md` for the behavior differences.
+
 ### Changed
-- Began the v2 evidence-aware redesign (`2.0.0.dev0`). Structure evidence,
+- Evidence-aware redesign: structure evidence,
   recurrence, ORF completeness, and RNA-surveillance prediction now have separate
   semantics and fields.
 - Parent selection now ranks explicit upstream hints, gene consistency, exact or
@@ -33,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exact resolved start and stop-codon positions, observed-boundary flags, censoring,
   partial-CDS intervals, detection fraction, and molecules per detected cell.
 - Scientific design and v1 migration documents.
+
+### Fixed
+- 3'UTR annotation no longer aborts the whole run when a reference parent's CDS
+  ends at the transcript 3' end with no annotated `stop_codon` (the GENCODE
+  `cds_end_NF` case). The parent stop is treated as unplaceable and only that
+  isoform's parent-relative 3'UTR fields are left empty; the isoform's own 3'UTR
+  metrics are unaffected. Previously a single such parent raised `ValueError` and
+  killed the annotation (`src/craft/core/utr3.py`).
 
 ## [1.9.0] - 2026-07-03
 
